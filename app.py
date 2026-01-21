@@ -14,11 +14,11 @@ st.markdown(
     """
 Aplikasi ini:
 - Mengubah data curah hujan harian format vertikal menjadi tabel horizontal (kolom stasiun) dengan urutan kolom mengikuti `HORIZONTAL_COLS`.
-- Menerapkan aturan QC nilai (DISPLAY dan NUMERIC).
+- Menerapkan aturan QC nilai (FORMAT BMKG dan NUMERIC).
 - Menghasilkan ringkasan kelengkapan per stasiun dan per hari, stasiun kosong total, serta stasiun kosong pada hari terakhir dalam jendela dasarian.
 - Memungkinkan pemilihan file output untuk diunduh.
 
-Aturan nilai DISPLAY:
+Aturan nilai FORMAT BMKG:
 - raw = 0 → "-"
 - raw = 8888 → "0"
 - raw = 9999 atau NaN atau tidak ada baris → "x"
@@ -161,18 +161,18 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
         .reindex(index=all_days, columns=HORIZONTAL_COLS)
     )
 
-    # DISPLAY rules
-    wide_display = pd.DataFrame("x", index=wide_raw.index, columns=wide_raw.columns)
+    # FORMAT BMKG rules
+    wide_bmkg = pd.DataFrame("x", index=wide_raw.index, columns=wide_raw.columns)
     row_exists = present.notna()
 
-    wide_display = wide_display.mask(row_exists & (wide_raw == 0), "-")
-    wide_display = wide_display.mask(row_exists & (wide_raw == 8888), "0")
+    wide_bmkg = wide_bmkg.mask(row_exists & (wide_raw == 0), "-")
+    wide_bmkg = wide_bmkg.mask(row_exists & (wide_raw == 8888), "0")
 
     is_pos_measured = row_exists & (wide_raw.notna()) & (wide_raw > 0) & (wide_raw != 8888) & (wide_raw != 9999)
-    wide_display = wide_display.mask(is_pos_measured, wide_raw.astype(float))
+    wide_bmkg = wide_bmkg.mask(is_pos_measured, wide_raw.astype(float))
 
-    wide_display_out = wide_display.copy()
-    wide_display_out.insert(0, "TGL", wide_display_out.index)
+    wide_bmkg_out = wide_bmkg.copy()
+    wide_bmkg_out.insert(0, "TGL", wide_bmkg_out.index)
 
     wide_num_out = wide_num.copy()
     wide_num_out.insert(0, "TGL", wide_num_out.index)
@@ -235,10 +235,10 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
     )
 
     # Strict order assertion
-    assert list(wide_display_out.columns[1:]) == HORIZONTAL_COLS, "Urutan kolom output tidak sesuai HORIZONTAL_COLS"
+    assert list(wide_bmkg_out.columns[1:]) == HORIZONTAL_COLS, "Urutan kolom output tidak sesuai HORIZONTAL_COLS"
 
     return {
-        "wide_display_out": wide_display_out,
+        "wide_bmkg_out": wide_bmkg_out,
         "wide_num_out": wide_num_out,
         "qc_station": station_summary.sort_values(["completeness_pct", "station"], ascending=[True, True]),
         "qc_day": day_summary,
@@ -271,7 +271,6 @@ with st.sidebar:
     )
 
     run = st.button("Run transpose + QC", type="primary", use_container_width=True)
-
     reset = st.button("Reset hasil", use_container_width=True)
 
 # ----------------------------
@@ -372,7 +371,7 @@ MONTH_STR = meta["MONTH_STR"]
 das_n = meta["das_n"]
 end_day = meta["end_day"]
 
-wide_display_out = outputs["wide_display_out"]
+wide_bmkg_out = outputs["wide_bmkg_out"]
 wide_num_out = outputs["wide_num_out"]
 qc_station = outputs["qc_station"]
 qc_day = outputs["qc_day"]
@@ -391,7 +390,7 @@ st.write(f"Total stasiun (kolom output): **{len(HORIZONTAL_COLS)}**")
 st.subheader("Ringkasan QC")
 
 total_cells = end_day * len(HORIZONTAL_COLS)
-cells_with_row = int((wide_display_out.drop(columns=["TGL"]) != "x").to_numpy().sum())
+cells_with_row = int((wide_bmkg_out.drop(columns=["TGL"]) != "x").to_numpy().sum())
 coverage_pct = round(cells_with_row / total_cells * 100, 2)
 
 c1, c2, c3 = st.columns(3)
@@ -417,18 +416,18 @@ if not qc_unmapped.empty:
         st.dataframe(qc_unmapped, use_container_width=True)
 
 # ----------------------------
-# View choice (this now works because outputs persist)
+# View choice
 # ----------------------------
 st.subheader("Tampilan tabel")
 view_choice = st.radio(
     "Pilih tampilan",
-    options=["DISPLAY (x / - / 0 / angka)", "NUMERIC (NaN / 0.1 / angka)"],
+    options=["FORMAT BMKG (x / - / 0 / angka)", "NUMERIC (NaN / 0.1 / angka)"],
     index=0,
     horizontal=True
 )
 
-if view_choice.startswith("DISPLAY"):
-    st.dataframe(wide_display_out, use_container_width=True)
+if view_choice.startswith("FORMAT BMKG"):
+    st.dataframe(wide_bmkg_out, use_container_width=True)
 else:
     st.dataframe(wide_num_out, use_container_width=True)
 
@@ -440,7 +439,7 @@ st.subheader("Download")
 download_choice = st.selectbox(
     "Pilih file yang ingin di-download",
     [
-        f"rain_horizontal_{MONTH_STR}_das{das_n}_display.csv",
+        f"rain_horizontal_{MONTH_STR}_das{das_n}_format_bmkg.csv",
         f"rain_horizontal_{MONTH_STR}_das{das_n}_numeric.csv",
         f"QC_station_completeness_{MONTH_STR}_das{das_n}.csv",
         f"QC_day_completeness_{MONTH_STR}_das{das_n}.csv",
@@ -452,7 +451,7 @@ download_choice = st.selectbox(
 )
 
 download_map = {
-    f"rain_horizontal_{MONTH_STR}_das{das_n}_display.csv": wide_display_out,
+    f"rain_horizontal_{MONTH_STR}_das{das_n}_format_bmkg.csv": wide_bmkg_out,
     f"rain_horizontal_{MONTH_STR}_das{das_n}_numeric.csv": wide_num_out,
     f"QC_station_completeness_{MONTH_STR}_das{das_n}.csv": qc_station,
     f"QC_day_completeness_{MONTH_STR}_das{das_n}.csv": qc_day,
