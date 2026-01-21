@@ -14,6 +14,59 @@ st.set_page_config(
 st.title("Pos Hujan Dasarian: Rekap, Indeks, dan QC")
 st.caption("Transpose vertikal → horizontal (urut stasiun fix) + FORMAT BMKG + NUMERIC + QC + Ringkasan + CDD/CWD/CHmax")
 
+with st.expander("Panduan dan syarat file (klik untuk buka)", expanded=False):
+    st.markdown(
+        """
+## Transposer Pos Hujan (Vertikal → Horizontal) + QC Dasarian
+
+Aplikasi ini digunakan untuk mengubah data curah hujan harian format **vertikal** (baris per stasiun per tanggal)
+menjadi format **horizontal** (1 baris per tanggal, kolom per stasiun) dengan urutan kolom **harus persis** mengikuti header yang sudah ditetapkan.
+
+### Input
+File CSV vertikal yang minimal memiliki kolom:
+- `NAME`
+- `DATA TIMESTAMP`
+- `RAINFALL DAY MM`
+
+### Pilihan di aplikasi
+- **Year**: Tahun data (misal 2026)
+- **Month**: Bulan data (01–12)
+- **Dasarian**:
+  - **Das 1**: tanggal 1–10
+  - **Das 2**: tanggal 1–20
+  - **Das 3**: satu bulan penuh
+
+### Aturan nilai (FORMAT BMKG)
+- `raw = 0` → tampil `-` (tidak hujan teramati)
+- `raw = 8888` → tampil `0` (hujan sangat kecil/trace)
+- `raw = 9999` → tampil `x` (tidak ada data/alat bermasalah)
+- `raw kosong/NaN` → tampil `x`
+- **Tidak ada baris** untuk stasiun pada tanggal tersebut → tampil `x`
+
+### Aturan nilai (NUMERIC untuk perhitungan)
+- `raw = 0` → `0.0`
+- `raw = 8888` → `0.1` (trace dianggap 0.1 mm)
+- `raw = 9999` → `NaN`
+- `raw kosong/NaN` → `NaN`
+- **Tidak ada baris** → `NaN`
+
+### Output yang tersedia
+- Tabel **FORMAT BMKG**
+- Tabel **NUMERIC**
+- QC kelengkapan (per stasiun dan per tanggal)
+- QC unmapped names (indikasi masalah penamaan)
+- QC stasiun kosong total dan kosong di hari terakhir
+- Ringkasan akumulasi dan indeks **CDD/CWD** serta **CH maksimum** pada window dasarian
+
+### Tutorial singkat
+1. Upload CSV vertikal (boleh lebih dari 1 file).
+2. Pilih **Year**, **Month**, **Dasarian**.
+3. Atur threshold bila perlu.
+4. Klik **Run**.
+5. Gunakan menu “Input / Hasil / QC / Tabel / Download” untuk berpindah halaman tanpa scroll.
+"""
+    )
+
 # ============================================================
 # Navigation: "Tabs" that are truly controllable
 # ============================================================
@@ -759,3 +812,4 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
