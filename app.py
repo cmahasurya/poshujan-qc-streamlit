@@ -65,7 +65,7 @@ HORIZONTAL_COLS = [
     "Aikmel","Jerowaru / Sepapan","karang baru timur/Wanasaba","Keruak",
     "Kokok Putih Sembalun","Kotaraja /montong gading","Labuhan Haji",
     "Labuhan Pandan","Lenek Duren","Masbagik","Montong Baan / Sikur",
-    "Perigi","Pringgaraya","Pringgasela","Rarang Selatan",
+    "Perigi","Pringgabaya","Pringgasela","Rarang Selatan",
     "Rensing Sakra Barat","Sambelia","Sembalun",
     "Sukamulia /Dasan Lekong","Swela","Terara","Brang Ene","Brang rea",
     "Maluk","Tano","Tapir /Seteluk","Jereweh","Taliwang","Sekongkang",
@@ -714,3 +714,4 @@ st.download_button(
     mime="text/csv",
     use_container_width=True
 )
+
