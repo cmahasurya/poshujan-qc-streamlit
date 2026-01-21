@@ -7,26 +7,55 @@ from datetime import date
 # Page
 # ============================================================
 st.set_page_config(
-    page_title="Pos Hujan Dasarian: Rekap, Indeks, dan QC",
+    page_title="Pos Hujan Dasarian: Rekap, Indeks, QC, dan Peta",
     layout="wide"
 )
 
-st.title("Pos Hujan Dasarian: Rekap, Indeks, dan QC")
-st.caption("Transpose vertikal → horizontal (urut stasiun fix) + FORMAT BMKG + NUMERIC + QC + Ringkasan + CDD/CWD/CHmax")
+st.title("Pos Hujan Dasarian: Rekap, Indeks, QC, dan Peta")
+st.caption(
+    "Transpose vertikal → horizontal (urut stasiun fix) + FORMAT BMKG + NUMERIC + QC + Ringkasan + "
+    "CDD/CWD/CHmax + Peta (lat lon dari coords.csv di repo)"
+)
 
+# ============================================================
+# Navigation (single-file multi-view; controllable like tabs)
+# ============================================================
+PAGES = ["Input", "Hasil", "QC", "Tabel", "Peta", "Download"]
+
+if "page" not in st.session_state:
+    st.session_state["page"] = "Input"
+
+def goto(page: str):
+    if page in PAGES:
+        st.session_state["page"] = page
+
+def to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8")
+
+# ============================================================
+# Panduan (collapsible, default closed)
+# ============================================================
 with st.expander("Panduan dan syarat file (klik untuk buka)", expanded=False):
     st.markdown(
         """
-## Transposer Pos Hujan (Vertikal → Horizontal)
+## Transposer Pos Hujan (Vertikal → Horizontal) + QC Dasarian + Peta
 
 Aplikasi ini digunakan untuk mengubah data curah hujan harian format **vertikal** (baris per stasiun per tanggal)
 menjadi format **horizontal** (1 baris per tanggal, kolom per stasiun) dengan urutan kolom **harus persis** mengikuti header yang sudah ditetapkan.
 
-### Input
+### Input Curah Hujan
 File CSV vertikal yang minimal memiliki kolom:
 - `NAME`
 - `DATA TIMESTAMP`
 - `RAINFALL DAY MM`
+
+### Koordinat untuk Tab Peta (dibaca dari repo)
+Aplikasi otomatis membaca **coords.csv** dari root repo (Opsi A) dengan kolom:
+- `POS HUJAN ID`
+- `NAME`
+- `CURRENT LATITUDE`
+- `CURRENT LONGITUDE`
+- `CURRENT ELEVATION M`
 
 ### Pilihan di aplikasi
 - **Year**: Tahun data (misal 2026)
@@ -50,37 +79,24 @@ File CSV vertikal yang minimal memiliki kolom:
 - `raw kosong/NaN` → `NaN`
 - **Tidak ada baris** → `NaN`
 
-### Output yang tersedia
+### Output utama
 - Tabel **FORMAT BMKG**
 - Tabel **NUMERIC**
 - QC kelengkapan (per stasiun dan per tanggal)
 - QC unmapped names (indikasi masalah penamaan)
 - QC stasiun kosong total dan kosong di hari terakhir
-- Ringkasan akumulasi dan indeks **CDD/CWD** serta **CH maksimum** pada window dasarian
+- Ringkasan akumulasi
+- Indeks **CDD/CWD terpanjang** serta **CH maksimum** pada window dasarian
+- Peta titik (lat lon) untuk visual QC, akumulasi, completeness, CDD/CWD, CH max
 
 ### Tutorial singkat
 1. Upload CSV vertikal (boleh lebih dari 1 file).
 2. Pilih **Year**, **Month**, **Dasarian**.
 3. Atur threshold bila perlu.
 4. Klik **Run**.
-5. Gunakan menu “Input / Hasil / QC / Tabel / Download” untuk berpindah halaman tanpa scroll.
+5. Gunakan menu “Input / Hasil / QC / Tabel / Peta / Download” untuk berpindah tampilan tanpa scroll.
 """
     )
-
-# ============================================================
-# Navigation: "Tabs" that are truly controllable
-# ============================================================
-PAGES = ["Input", "Hasil", "QC", "Tabel", "Download"]
-
-if "page" not in st.session_state:
-    st.session_state["page"] = "Input"
-
-def goto(page: str):
-    if page in PAGES:
-        st.session_state["page"] = page
-
-def to_csv_bytes(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=False).encode("utf-8")
 
 # ============================================================
 # HARD CODE: HORIZONTAL_COLS + NAME_MAP
@@ -160,6 +176,7 @@ NAME_MAP = {
     "Sukamulia/Dasan Lekong": "Sukamulia /Dasan Lekong",
     "Tapir/Seteluk": "Tapir /Seteluk",
     "Kateng": "Kateng (lombok Tengah)",
+    "Sape 2": "Sape2",
 }
 
 # ============================================================
@@ -173,11 +190,83 @@ def month_end_day(year: int, month: int) -> int:
 def normalize_station_name(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
 
+def load_coords_from_repo(path: str = "coords.csv") -> pd.DataFrame:
+    """
+    Membaca coords.csv dari root repo (Opsi A).
+    Wajib punya kolom:
+    POS HUJAN ID, NAME, CURRENT LATITUDE, CURRENT LONGITUDE, CURRENT ELEVATION M
+    """
+    try:
+        return pd.read_csv(path)
+    except Exception as e:
+        raise RuntimeError(
+            f"Gagal membaca '{path}'. Pastikan file ada di root repo dan formatnya CSV. Detail: {e}"
+        )
+
+def prepare_station_coordinates(coord_raw: pd.DataFrame) -> pd.DataFrame:
+    """
+    coord_raw wajib punya kolom Opsi A:
+    - POS HUJAN ID
+    - NAME
+    - CURRENT LATITUDE
+    - CURRENT LONGITUDE
+    - CURRENT ELEVATION M
+    """
+    c = coord_raw.copy()
+
+    # validate presence
+    req = ["POS HUJAN ID", "NAME", "CURRENT LATITUDE", "CURRENT LONGITUDE", "CURRENT ELEVATION M"]
+    missing = [x for x in req if x not in c.columns]
+    if missing:
+        raise ValueError(f"Kolom wajib pada coords.csv tidak ditemukan: {missing}")
+
+    # rename kolom agar nyaman
+    c = c.rename(columns={
+        "POS HUJAN ID": "pos_id",
+        "NAME": "name_raw",
+        "CURRENT LATITUDE": "lat_raw",
+        "CURRENT LONGITUDE": "lon_raw",
+        "CURRENT ELEVATION M": "elev_m",
+    })
+
+    # normalisasi nama + mapping mengikuti NAME_MAP
+    c["name_raw"] = normalize_station_name(c["name_raw"])
+    c["station"] = c["name_raw"].replace(NAME_MAP)
+
+    # parse numeric
+    c["lat"] = pd.to_numeric(c["lat_raw"], errors="coerce")
+    c["lon"] = pd.to_numeric(c["lon_raw"], errors="coerce")
+    c["elev_m"] = pd.to_numeric(c["elev_m"], errors="coerce")
+
+    # QC koordinat
+    c["qc_coord_ok"] = c["lat"].notna() & c["lon"].notna()
+    c["qc_in_bounds_ntb"] = c["lat"].between(-11.5, -7.0) & c["lon"].between(115.0, 119.5)
+
+    dup_key = c[["lat", "lon"]].round(5).astype(str).agg(",".join, axis=1)
+    c["qc_dup_latlon"] = dup_key.duplicated(keep=False) & c["qc_coord_ok"]
+
+    # left join ke daftar resmi HORIZONTAL_COLS
+    base = pd.DataFrame({"station": HORIZONTAL_COLS})
+    out = base.merge(
+        c[["station", "pos_id", "lat", "lon", "elev_m", "name_raw", "qc_coord_ok", "qc_in_bounds_ntb", "qc_dup_latlon"]],
+        on="station",
+        how="left"
+    )
+
+    out["qc_flag"] = np.where(
+        out["lat"].notna() & out["lon"].notna(),
+        "OK",
+        "MISSING_COORD"
+    )
+    out.loc[(out["qc_flag"] == "OK") & (out["qc_in_bounds_ntb"] == False), "qc_flag"] = "OUT_OF_BOUNDS"
+    out.loc[(out["qc_flag"] == "OK") & (out["qc_dup_latlon"] == True), "qc_flag"] = "DUP_LATLON"
+
+    return out
+
 def longest_run(series: pd.Series, condition_func):
     max_len = 0
     max_start = None
     max_end = None
-
     cur_len = 0
     cur_start = None
 
@@ -394,7 +483,7 @@ def build_dashboard(wide_num_out: pd.DataFrame, rainy_threshold: float, heavy_th
     }
 
 # ============================================================
-# State init
+# Session state init
 # ============================================================
 if "outputs" not in st.session_state:
     st.session_state["outputs"] = None
@@ -402,6 +491,9 @@ if "meta" not in st.session_state:
     st.session_state["meta"] = None
 if "derived" not in st.session_state:
     st.session_state["derived"] = None
+if "coords_final" not in st.session_state:
+    coords_repo = load_coords_from_repo("coords.csv")
+    st.session_state["coords_final"] = prepare_station_coordinates(coords_repo)
 
 def clear_results():
     st.session_state["outputs"] = None
@@ -415,9 +507,9 @@ def require_results():
         st.stop()
 
 # ============================================================
-# Top navigation bar (real navigation)
+# Top navigation bar
 # ============================================================
-nav_cols = st.columns([1, 1, 1, 1, 1, 2])
+nav_cols = st.columns([1, 1, 1, 1, 1, 1, 2])
 with nav_cols[0]:
     if st.button("Input", use_container_width=True):
         goto("Input"); st.rerun()
@@ -431,9 +523,12 @@ with nav_cols[3]:
     if st.button("Tabel", use_container_width=True):
         goto("Tabel"); st.rerun()
 with nav_cols[4]:
+    if st.button("Peta", use_container_width=True):
+        goto("Peta"); st.rerun()
+with nav_cols[5]:
     if st.button("Download", use_container_width=True):
         goto("Download"); st.rerun()
-with nav_cols[5]:
+with nav_cols[6]:
     st.write(f"**Halaman aktif:** {st.session_state['page']}")
 
 st.divider()
@@ -444,11 +539,11 @@ st.divider()
 if st.session_state["page"] == "Input":
     st.subheader("Input data")
 
-    up = st.file_uploader(
-        "Upload CSV vertikal",
+    up_rain = st.file_uploader(
+        "Upload CSV vertikal (curah hujan)",
         type=["csv"],
         accept_multiple_files=True,
-        key="uploader"
+        key="uploader_rain"
     )
 
     cA, cB, cC = st.columns([1, 1, 1.2])
@@ -486,9 +581,19 @@ if st.session_state["page"] == "Input":
         st.success("Hasil direset.")
         st.rerun()
 
+    with st.expander("Status koordinat yang dipakai (coords.csv)", expanded=False):
+        coords_final = st.session_state["coords_final"].copy()
+        st.write("Default koordinat dibaca dari file **coords.csv** di root repo.")
+        st.write(f"Jumlah stasiun pada HORIZONTAL_COLS: **{len(HORIZONTAL_COLS)}**")
+        st.write(f"Koordinat OK: **{int((coords_final['qc_flag'] == 'OK').sum())}**")
+        st.write(f"Tanpa koordinat: **{int((coords_final['qc_flag'] == 'MISSING_COORD').sum())}**")
+        st.write(f"Out of bounds: **{int((coords_final['qc_flag'] == 'OUT_OF_BOUNDS').sum())}**")
+        st.write(f"Duplikat lat lon: **{int((coords_final['qc_flag'] == 'DUP_LATLON').sum())}**")
+        st.dataframe(coords_final.head(60), use_container_width=True, height=420)
+
     if run:
-        if not up:
-            st.error("Upload file CSV terlebih dahulu.")
+        if not up_rain:
+            st.error("Upload file CSV vertikal curah hujan terlebih dahulu.")
             st.stop()
 
         YEAR = int(year)
@@ -501,7 +606,7 @@ if st.session_state["page"] == "Input":
 
         dfs = []
         bad_files = []
-        for f in up:
+        for f in up_rain:
             try:
                 tmp = pd.read_csv(f)
                 tmp["__source_file__"] = f.name
@@ -512,7 +617,7 @@ if st.session_state["page"] == "Input":
         if bad_files:
             st.warning(f"File gagal dibaca dan diabaikan: {bad_files}")
         if not dfs:
-            st.error("Tidak ada file valid untuk diproses.")
+            st.error("Tidak ada file curah hujan valid untuk diproses.")
             st.stop()
 
         df = pd.concat(dfs, ignore_index=True)
@@ -684,12 +789,14 @@ elif st.session_state["page"] == "QC":
     end_day = meta["end_day"]
 
     wide_bmkg_out = outputs["wide_bmkg_out"]
+    qc_station = outputs["qc_station"]
     qc_unmapped = outputs["qc_unmapped"]
     qc_gap = outputs["qc_gap"]
     qc_empty_last_day = outputs["qc_empty_last_day"]
 
     st.subheader("QC")
     st.write(f"Periode: **{MONTH_STR}** | Dasarian: **{das_n}** | Rentang: **1–{end_day}**")
+    st.write(f"Total stasiun: **{len(HORIZONTAL_COLS)}**")
 
     total_cells_bmkg = end_day * len(HORIZONTAL_COLS)
     cells_with_row = int((wide_bmkg_out.drop(columns=["TGL"]) != "x").to_numpy().sum())
@@ -701,6 +808,9 @@ elif st.session_state["page"] == "QC":
     q3.metric("Stations", f"{len(HORIZONTAL_COLS)}")
 
     st.markdown("---")
+    with st.expander("QC kelengkapan per stasiun"):
+        st.dataframe(qc_station, use_container_width=True, height=520)
+
     with st.expander("Stasiun kosong total pada jendela dasarian"):
         empty_all_stations = qc_gap[qc_gap["has_any_record_1_to_end_das"] == 0]["station"].tolist()
         if empty_all_stations:
@@ -744,6 +854,85 @@ elif st.session_state["page"] == "Tabel":
         st.dataframe(wide_num_out, use_container_width=True, height=720)
 
 # ============================================================
+# PAGE: Peta
+# ============================================================
+elif st.session_state["page"] == "Peta":
+    st.subheader("Peta titik stasiun (lat lon)")
+
+    coords_final = st.session_state["coords_final"].copy()
+
+    if st.session_state.get("outputs") is not None:
+        outputs = st.session_state["outputs"]
+        derived = st.session_state["derived"]
+
+        qc_station = outputs["qc_station"][["station", "completeness_pct"]].copy()
+        station_dash = derived["station_dash"][["station", "total_mm", "max_mm", "tgl_max"]].copy()
+        cdd_cwd_df = derived["cdd_cwd_df"][["station", "CDD_len", "CWD_len", "CH_max_mm", "CH_max_TGL"]].copy()
+
+        map_df = coords_final.merge(qc_station, on="station", how="left") \
+                            .merge(station_dash, on="station", how="left") \
+                            .merge(cdd_cwd_df, on="station", how="left")
+        st.caption("Peta sudah digabung dengan hasil curah hujan, QC, dan indeks.")
+    else:
+        map_df = coords_final.copy()
+        st.info("Hasil curah hujan belum diproses. Peta hanya menampilkan koordinat dan QC koordinat.")
+
+    layer = st.selectbox(
+        "Pilih layer peta",
+        options=[
+            "QC Koordinat (flag)",
+            "Kelengkapan data (completeness_pct)",
+            "Akumulasi dasarian (total_mm)",
+            "CDD terpanjang (CDD_len)",
+            "CWD terpanjang (CWD_len)",
+            "CH maksimum (CH_max_mm)"
+        ],
+        index=0
+    )
+
+    c1, c2, c3 = st.columns([1, 1, 1.2])
+    with c1:
+        hide_missing = st.checkbox("Sembunyikan stasiun tanpa koordinat", value=True)
+    with c2:
+        show_only_bad = st.checkbox("Tampilkan hanya QC bermasalah", value=False)
+    with c3:
+        st.caption("Catatan: st.map tidak mendukung warna per titik. Warna/QC ditampilkan lewat tabel ringkas di bawah.")
+
+    plot_df = map_df.copy()
+    if hide_missing:
+        plot_df = plot_df[plot_df["lat"].notna() & plot_df["lon"].notna()].copy()
+    if show_only_bad:
+        plot_df = plot_df[plot_df["qc_flag"].isin(["MISSING_COORD", "OUT_OF_BOUNDS", "DUP_LATLON"])].copy()
+
+    if plot_df.empty:
+        st.warning("Tidak ada titik yang bisa ditampilkan (cek filter atau data koordinat).")
+    else:
+        st.map(plot_df.rename(columns={"lat": "latitude", "lon": "longitude"})[["latitude", "longitude"]])
+
+    st.markdown("### Ringkasan layer (tabel)")
+    cols_show = ["station", "pos_id", "lat", "lon", "elev_m", "qc_flag"]
+    if layer == "Kelengkapan data (completeness_pct)" and "completeness_pct" in map_df.columns:
+        cols_show += ["completeness_pct"]
+    elif layer == "Akumulasi dasarian (total_mm)" and "total_mm" in map_df.columns:
+        cols_show += ["total_mm", "max_mm", "tgl_max"]
+    elif layer == "CDD terpanjang (CDD_len)" and "CDD_len" in map_df.columns:
+        cols_show += ["CDD_len"]
+    elif layer == "CWD terpanjang (CWD_len)" and "CWD_len" in map_df.columns:
+        cols_show += ["CWD_len"]
+    elif layer == "CH maksimum (CH_max_mm)" and "CH_max_mm" in map_df.columns:
+        cols_show += ["CH_max_mm", "CH_max_TGL"]
+
+    cols_show = [c for c in cols_show if c in map_df.columns]
+    st.dataframe(map_df[cols_show], use_container_width=True, height=620)
+
+    with st.expander("QC Koordinat: stasiun tanpa koordinat / out of bounds / duplikat", expanded=False):
+        qc_bad = coords_final[coords_final["qc_flag"].isin(["MISSING_COORD", "OUT_OF_BOUNDS", "DUP_LATLON"])].copy()
+        if qc_bad.empty:
+            st.write("Tidak ada isu QC koordinat yang terdeteksi.")
+        else:
+            st.dataframe(qc_bad, use_container_width=True, height=520)
+
+# ============================================================
 # PAGE: Download
 # ============================================================
 elif st.session_state["page"] == "Download":
@@ -768,9 +957,12 @@ elif st.session_state["page"] == "Download":
     day_dash = derived["day_dash"]
     cdd_cwd_df = derived["cdd_cwd_df"]
 
+    coords_final = st.session_state["coords_final"].copy()
+
     summary_station_name = f"SUMMARY_station_rain_{MONTH_STR}_das{das_n}.csv"
     summary_day_name = f"SUMMARY_day_rain_{MONTH_STR}_das{das_n}.csv"
     summary_cdd_cwd_name = f"SUMMARY_CDD_CWD_CHmax_{MONTH_STR}_das{das_n}.csv"
+    coords_name = "STATION_COORDS_MAPPED.csv"
 
     st.subheader("Download")
 
@@ -787,6 +979,7 @@ elif st.session_state["page"] == "Download":
             summary_station_name,
             summary_day_name,
             summary_cdd_cwd_name,
+            coords_name,
         ],
         index=0
     )
@@ -802,6 +995,7 @@ elif st.session_state["page"] == "Download":
         summary_station_name: station_dash,
         summary_day_name: day_dash,
         summary_cdd_cwd_name: cdd_cwd_df,
+        coords_name: coords_final,
     }
 
     df_dl = download_map[download_choice]
@@ -812,5 +1006,3 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
-
-
