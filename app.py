@@ -17,7 +17,7 @@ st.caption("Transpose vertikal → horizontal (urut stasiun fix) + FORMAT BMKG +
 with st.expander("Panduan dan syarat file (klik untuk buka)", expanded=False):
     st.markdown(
         """
-## Transposer Pos Hujan (Vertikal → Horizontal) + QC Dasarian
+## Transposer Pos Hujan (Vertikal → Horizontal)
 
 Aplikasi ini digunakan untuk mengubah data curah hujan harian format **vertikal** (baris per stasiun per tanggal)
 menjadi format **horizontal** (1 baris per tanggal, kolom per stasiun) dengan urutan kolom **harus persis** mengikuti header yang sudah ditetapkan.
@@ -812,4 +812,5 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
