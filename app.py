@@ -15,61 +15,19 @@ st.title("Pos Hujan Dasarian: Rekap, Indeks, dan QC")
 st.caption("Transpose vertikal → horizontal (urut stasiun fix) + FORMAT BMKG + NUMERIC + QC + Ringkasan + CDD/CWD/CHmax")
 
 # ============================================================
-# Tabs navigation via query params + buttons
+# Navigation: "Tabs" that are truly controllable
 # ============================================================
-TAB_NAMES = ["Input", "Hasil", "QC", "Tabel", "Download"]
+PAGES = ["Input", "Hasil", "QC", "Tabel", "Download"]
 
-def set_active_tab(name: str):
-    if name in TAB_NAMES:
-        st.query_params["tab"] = name
+if "page" not in st.session_state:
+    st.session_state["page"] = "Input"
 
-def get_active_tab() -> str:
-    tab = st.query_params.get("tab", "Input")
-    if isinstance(tab, list):
-        tab = tab[0]
-    return tab if tab in TAB_NAMES else "Input"
+def goto(page: str):
+    if page in PAGES:
+        st.session_state["page"] = page
 
 def to_csv_bytes(df: pd.DataFrame) -> bytes:
     return df.to_csv(index=False).encode("utf-8")
-
-# ------------------------------------------------------------
-# User help markdown
-# ------------------------------------------------------------
-with st.expander("Panduan dan syarat file (klik untuk buka)"):
-    st.markdown(
-        """
-Aplikasi ini:
-- Mengubah data curah hujan harian format vertikal menjadi tabel horizontal (kolom stasiun) dengan urutan kolom mengikuti `HORIZONTAL_COLS`.
-- Menyediakan 2 format hasil:
-  - **FORMAT BMKG**: `x`, `-`, `0`, atau angka hujan.
-  - **NUMERIC**: angka hujan (trace 0.1), missing = NaN.
-- Menyediakan QC kelengkapan, nama unmapped, gap, dan stasiun kosong pada hari terakhir.
-- Menghitung indeks:
-  - **CDD terpanjang**: run hari kering (rain = 0.0) dalam window.
-  - **CWD terpanjang**: run hari hujan (rain >= batas hari hujan) dalam window.
-  - **CH maksimum dasarian ini**: maksimum hujan harian per stasiun dalam window.
-
-Syarat file yang di upload:
-- Format: CSV (bisa multi upload).
-- Minimal memiliki kolom (nama harus persis):
-  - `NAME`
-  - `DATA TIMESTAMP`
-  - `RAINFALL DAY MM`
-- `DATA TIMESTAMP` harus bisa diparse (contoh: `2026-01-05 00:00:00`).
-- `RAINFALL DAY MM` numerik atau kode:
-  - `0` = tidak hujan
-  - `8888` = trace
-  - `9999` = missing/alat bermasalah
-  - kosong/NaN = missing
-
-Tutorial singkat:
-1. Upload CSV vertikal (boleh lebih dari 1 file).
-2. Pilih Year, Month, Dasarian.
-3. Atur threshold bila perlu.
-4. Klik Run.
-5. Klik tombol navigasi untuk lompat ke tab hasil yang diinginkan.
-"""
-    )
 
 # ============================================================
 # HARD CODE: HORIZONTAL_COLS + NAME_MAP
@@ -152,7 +110,7 @@ NAME_MAP = {
 }
 
 # ============================================================
-# Computation helpers
+# Helpers
 # ============================================================
 def month_end_day(year: int, month: int) -> int:
     month_start = pd.Timestamp(year=year, month=month, day=1)
@@ -232,6 +190,7 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
     df_month["raw"] = pd.to_numeric(df_month["RAINFALL DAY MM"], errors="coerce")
     df_month["has_row"] = 1
 
+    # NUMERIC mapping
     rain_num = df_month["raw"].copy()
     rain_num[df_month["raw"].isna()] = np.nan
     rain_num[df_month["raw"] == 9999] = np.nan
@@ -252,6 +211,7 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
         .reindex(index=all_days, columns=HORIZONTAL_COLS)
     )
 
+    # FORMAT BMKG
     wide_bmkg = pd.DataFrame("x", index=wide_raw.index, columns=wide_raw.columns)
     row_exists = present.notna()
     wide_bmkg = wide_bmkg.mask(row_exists & (wide_raw == 0), "-")
@@ -265,6 +225,7 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
     wide_num_out = wide_num.copy()
     wide_num_out.insert(0, "TGL", wide_num_out.index)
 
+    # QC summaries
     station_summary = pd.DataFrame({
         "station": HORIZONTAL_COLS,
         "days_present": present.notna().sum(axis=0).astype(int).values,
@@ -306,7 +267,6 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
         "is_empty_on_last_day": (~last_day_present.reindex(HORIZONTAL_COLS).fillna(False)).astype(int).values,
         "last_record_day_in_window": last_present_day.reindex(HORIZONTAL_COLS).values
     })
-
     qc_empty_last_day["empty_days_up_to_last_day"] = np.where(
         qc_empty_last_day["last_record_day_in_window"].isna(),
         float(end_day),
@@ -381,7 +341,7 @@ def build_dashboard(wide_num_out: pd.DataFrame, rainy_threshold: float, heavy_th
     }
 
 # ============================================================
-# Session state init
+# State init
 # ============================================================
 if "outputs" not in st.session_state:
     st.session_state["outputs"] = None
@@ -394,16 +354,41 @@ def clear_results():
     st.session_state["outputs"] = None
     st.session_state["meta"] = None
     st.session_state["derived"] = None
+    goto("Input")
+
+def require_results():
+    if st.session_state.get("outputs") is None or st.session_state.get("meta") is None or st.session_state.get("derived") is None:
+        st.info("Belum ada hasil. Silakan proses data di halaman Input.")
+        st.stop()
 
 # ============================================================
-# Tabs layout
+# Top navigation bar (real navigation)
 # ============================================================
-tab_input, tab_hasil, tab_qc, tab_tabel, tab_download = st.tabs(TAB_NAMES)
+nav_cols = st.columns([1, 1, 1, 1, 1, 2])
+with nav_cols[0]:
+    if st.button("Input", use_container_width=True):
+        goto("Input"); st.rerun()
+with nav_cols[1]:
+    if st.button("Hasil", use_container_width=True):
+        goto("Hasil"); st.rerun()
+with nav_cols[2]:
+    if st.button("QC", use_container_width=True):
+        goto("QC"); st.rerun()
+with nav_cols[3]:
+    if st.button("Tabel", use_container_width=True):
+        goto("Tabel"); st.rerun()
+with nav_cols[4]:
+    if st.button("Download", use_container_width=True):
+        goto("Download"); st.rerun()
+with nav_cols[5]:
+    st.write(f"**Halaman aktif:** {st.session_state['page']}")
+
+st.divider()
 
 # ============================================================
-# TAB: Input
+# PAGE: Input
 # ============================================================
-with tab_input:
+if st.session_state["page"] == "Input":
     st.subheader("Input data")
 
     up = st.file_uploader(
@@ -414,7 +399,6 @@ with tab_input:
     )
 
     cA, cB, cC = st.columns([1, 1, 1.2])
-
     today = date.today()
     with cA:
         year = st.number_input("Year", min_value=2000, max_value=2100, value=int(today.year), step=1)
@@ -436,23 +420,13 @@ with tab_input:
     with t2:
         heavy_thr = st.number_input("Batas hujan lebat (mm)", min_value=0.0, value=20.0, step=1.0)
 
-    b1, b2, b3, b4, b5 = st.columns([1, 1, 1, 1, 1])
+    b1, b2, b3 = st.columns([1, 1, 2])
     with b1:
         run = st.button("Run", type="primary", use_container_width=True)
     with b2:
         reset = st.button("Reset hasil", use_container_width=True)
     with b3:
-        if st.button("Buka Hasil", use_container_width=True):
-            set_active_tab("Hasil")
-            st.rerun()
-    with b4:
-        if st.button("Buka QC", use_container_width=True):
-            set_active_tab("QC")
-            st.rerun()
-    with b5:
-        if st.button("Buka Download", use_container_width=True):
-            set_active_tab("Download")
-            st.rerun()
+        st.caption("Tip: setelah Run sukses, app otomatis pindah ke halaman Hasil.")
 
     if reset:
         clear_results()
@@ -489,7 +463,6 @@ with tab_input:
             st.stop()
 
         df = pd.concat(dfs, ignore_index=True)
-
         required_cols = ["NAME", "DATA TIMESTAMP", "RAINFALL DAY MM"]
         missing_cols = [c for c in required_cols if c not in df.columns]
         if missing_cols:
@@ -543,22 +516,14 @@ with tab_input:
             "best_ch": best_ch,
         }
 
-        st.success("Selesai diproses. Membuka tab Hasil.")
-        set_active_tab("Hasil")
+        st.success("Selesai diproses. Membuka halaman Hasil.")
+        goto("Hasil")
         st.rerun()
 
 # ============================================================
-# Common gate for result tabs
+# PAGE: Hasil
 # ============================================================
-def require_results():
-    if st.session_state.get("outputs") is None or st.session_state.get("meta") is None or st.session_state.get("derived") is None:
-        st.info("Belum ada hasil. Silakan proses data di tab Input.")
-        st.stop()
-
-# ============================================================
-# TAB: Hasil
-# ============================================================
-with tab_hasil:
+elif st.session_state["page"] == "Hasil":
     require_results()
 
     meta = st.session_state["meta"]
@@ -638,24 +603,24 @@ with tab_hasil:
 
     with cR:
         st.subheader("Top 15 stasiun berdasarkan akumulasi")
-        st.dataframe(station_dash.head(15), use_container_width=True, height=420)
+        st.dataframe(station_dash.head(15), use_container_width=True, height=520)
 
     st.markdown("---")
     cc1, cc2 = st.columns(2)
     with cc1:
         st.subheader("Top 15 CDD terpanjang (per stasiun)")
-        st.dataframe(top_cdd[["station","CDD_len","CDD_start","CDD_end","CH_max_mm","CH_max_TGL"]], use_container_width=True, height=420)
+        st.dataframe(top_cdd[["station","CDD_len","CDD_start","CDD_end","CH_max_mm","CH_max_TGL"]], use_container_width=True, height=520)
     with cc2:
         st.subheader("Top 15 CWD terpanjang (per stasiun)")
-        st.dataframe(top_cwd[["station","CWD_len","CWD_start","CWD_end","CH_max_mm","CH_max_TGL"]], use_container_width=True, height=420)
+        st.dataframe(top_cwd[["station","CWD_len","CWD_start","CWD_end","CH_max_mm","CH_max_TGL"]], use_container_width=True, height=520)
 
     with st.expander("Tabel lengkap CDD/CWD/CHmax (semua stasiun)"):
         st.dataframe(cdd_cwd_df, use_container_width=True, height=520)
 
 # ============================================================
-# TAB: QC
+# PAGE: QC
 # ============================================================
-with tab_qc:
+elif st.session_state["page"] == "QC":
     require_results()
 
     outputs = st.session_state["outputs"]
@@ -670,12 +635,9 @@ with tab_qc:
     qc_gap = outputs["qc_gap"]
     qc_empty_last_day = outputs["qc_empty_last_day"]
 
-    st.subheader("Parameter")
-    st.write(f"Periode: **{MONTH_STR}**")
-    st.write(f"Dasarian: **{das_n}** | Rentang tanggal: **1 s.d. {end_day}**")
-    st.write(f"Total stasiun: **{len(HORIZONTAL_COLS)}**")
+    st.subheader("QC")
+    st.write(f"Periode: **{MONTH_STR}** | Dasarian: **{das_n}** | Rentang: **1–{end_day}**")
 
-    st.subheader("Ringkasan QC (kelengkapan record berbasis FORMAT BMKG)")
     total_cells_bmkg = end_day * len(HORIZONTAL_COLS)
     cells_with_row = int((wide_bmkg_out.drop(columns=["TGL"]) != "x").to_numpy().sum())
     coverage_pct = round(cells_with_row / total_cells_bmkg * 100, 2)
@@ -704,18 +666,17 @@ with tab_qc:
             st.dataframe(qc_unmapped, use_container_width=True)
 
 # ============================================================
-# TAB: Tabel
+# PAGE: Tabel
 # ============================================================
-with tab_tabel:
+elif st.session_state["page"] == "Tabel":
     require_results()
 
     outputs = st.session_state["outputs"]
-    meta = st.session_state["meta"]
-
     wide_bmkg_out = outputs["wide_bmkg_out"]
     wide_num_out = outputs["wide_num_out"]
 
     st.subheader("Tabel Output")
+
     view_choice = st.radio(
         "Pilih tampilan",
         options=["FORMAT BMKG (x / - / 0 / angka)", "NUMERIC (NaN / 0.1 / angka)"],
@@ -725,14 +686,14 @@ with tab_tabel:
     )
 
     if view_choice.startswith("FORMAT BMKG"):
-        st.dataframe(wide_bmkg_out, use_container_width=True, height=620)
+        st.dataframe(wide_bmkg_out, use_container_width=True, height=720)
     else:
-        st.dataframe(wide_num_out, use_container_width=True, height=620)
+        st.dataframe(wide_num_out, use_container_width=True, height=720)
 
 # ============================================================
-# TAB: Download
+# PAGE: Download
 # ============================================================
-with tab_download:
+elif st.session_state["page"] == "Download":
     require_results()
 
     outputs = st.session_state["outputs"]
