@@ -506,6 +506,63 @@ def require_results():
     if st.session_state.get("outputs") is None or st.session_state.get("meta") is None or st.session_state.get("derived") is None:
         st.info("Belum ada hasil. Silakan proses data di halaman Input.")
         st.stop()
+def legend_qc_block():
+    # Warna harus konsisten dengan qc_to_rgb
+    items = [
+        ("OK", (30, 160, 60)),
+        ("MISSING_COORD", (180, 180, 180)),
+        ("OUT_OF_BOUNDS", (255, 140, 0)),
+        ("DUP_LATLON", (220, 60, 60)),
+    ]
+    st.markdown("**Legend (QC)**")
+    for label, (r, g, b) in items:
+        st.markdown(
+            f"""
+<div style="display:flex;align-items:center;margin-bottom:6px;">
+  <div style="width:14px;height:14px;background:rgb({r},{g},{b});border:1px solid #999;margin-right:8px;"></div>
+  <div style="font-size:13px;">{label}</div>
+</div>
+""",
+            unsafe_allow_html=True
+        )
+
+def legend_continuous_block(series: pd.Series, title: str):
+    s = pd.to_numeric(series, errors="coerce")
+    s = s[np.isfinite(s)]
+    st.markdown(f"**Legend ({title})**")
+
+    if s.empty:
+        st.caption("Tidak ada nilai untuk dibuat legend.")
+        return
+
+    q0 = float(np.nanmin(s))
+    q25 = float(np.nanpercentile(s, 25))
+    q50 = float(np.nanpercentile(s, 50))
+    q75 = float(np.nanpercentile(s, 75))
+    q100 = float(np.nanmax(s))
+
+    # Bar sederhana (low -> high)
+    st.markdown(
+        """
+<div style="height:12px;border-radius:6px;border:1px solid #bbb;
+background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
+</div>
+""",
+        unsafe_allow_html=True
+    )
+
+    st.write(
+        pd.DataFrame(
+            {
+                "min": [q0],
+                "p25": [q25],
+                "median": [q50],
+                "p75": [q75],
+                "max": [q100],
+            }
+        )
+    )
+
 
 # ============================================================
 # Top navigation bar
@@ -862,7 +919,9 @@ elif st.session_state["page"] == "Peta":
 
     coords_final = st.session_state["coords_final"].copy()
 
+    # -----------------------------
     # Join hasil jika tersedia
+    # -----------------------------
     if st.session_state.get("outputs") is not None:
         outputs = st.session_state["outputs"]
         derived = st.session_state["derived"]
@@ -871,22 +930,33 @@ elif st.session_state["page"] == "Peta":
         station_dash = derived["station_dash"][["station", "total_mm", "max_mm", "tgl_max"]].copy()
         cdd_cwd_df = derived["cdd_cwd_df"][["station", "CDD_len", "CWD_len", "CH_max_mm", "CH_max_TGL"]].copy()
 
-        map_df = coords_final.merge(qc_station, on="station", how="left") \
-                             .merge(station_dash, on="station", how="left") \
-                             .merge(cdd_cwd_df, on="station", how="left")
+        map_df = (
+            coords_final.merge(qc_station, on="station", how="left")
+                       .merge(station_dash, on="station", how="left")
+                       .merge(cdd_cwd_df, on="station", how="left")
+        )
         st.caption("Peta sudah digabung dengan hasil curah hujan, QC, dan indeks.")
     else:
         map_df = coords_final.copy()
         st.info("Hasil curah hujan belum diproses. Peta hanya menampilkan koordinat dan QC koordinat.")
 
-    # Filter koordinat
-    c1, c2, c3 = st.columns([1, 1, 1.2])
+    # -----------------------------
+    # Controls
+    # -----------------------------
+    c1, c2, c3, c4 = st.columns([1, 1, 1.1, 1.2])
     with c1:
         hide_missing = st.checkbox("Sembunyikan stasiun tanpa koordinat", value=True)
     with c2:
-        show_only_bad = st.checkbox("Tampilkan hanya QC koordinat bermasalah", value=False)
+        show_only_bad = st.checkbox("Hanya QC koordinat bermasalah", value=False)
     with c3:
         point_size = st.slider("Ukuran titik", min_value=3, max_value=18, value=9, step=1)
+    with c4:
+        mode = st.radio(
+            "Mode peta",
+            options=["Titik (Scatter)", "Heatmap (nilai layer)"],
+            index=0,
+            horizontal=True
+        )
 
     plot_df = map_df.copy()
     if hide_missing:
@@ -898,9 +968,8 @@ elif st.session_state["page"] == "Peta":
         st.warning("Tidak ada titik yang bisa ditampilkan (cek filter atau data koordinat).")
         st.stop()
 
-    # Pilih layer untuk warna
     layer = st.selectbox(
-        "Warna berdasarkan",
+        "Warna atau bobot berdasarkan",
         options=[
             "QC Koordinat (flag)",
             "Kelengkapan data (completeness_pct)",
@@ -912,16 +981,21 @@ elif st.session_state["page"] == "Peta":
         index=0
     )
 
-    # ------------------------------------------------------------
-    # Color logic (tanpa library tambahan)
-    # - Untuk numeric: gradient sederhana dari nilai min→max
-    # - Untuk QC: warna kategori
-    # ------------------------------------------------------------
+    left, right = st.columns([4.2, 1.3])
+
+    with left:
+        st.markdown("### Map")
+    with right:
+        st.markdown("### Legend")
+
+    # -----------------------------
+    # Color + legend helpers
+    # -----------------------------
     def clamp01(x: float) -> float:
         return max(0.0, min(1.0, x))
 
     def value_to_rgb(v, vmin, vmax):
-        # gradient: rendah -> biru, tinggi -> merah (sederhana)
+        # gradient: rendah -> biru, tinggi -> merah
         if pd.isna(v) or pd.isna(vmin) or pd.isna(vmax) or vmax == vmin:
             return [160, 160, 160, 180]
         t = clamp01((float(v) - float(vmin)) / (float(vmax) - float(vmin)))
@@ -939,71 +1013,127 @@ elif st.session_state["page"] == "Peta":
         }
         return m.get(str(flag), [140, 140, 140, 170])
 
-    # Tentukan kolom metrik + label tooltip
+    def render_qc_legend(container):
+        items = [
+            ("OK", (30, 160, 60)),
+            ("MISSING_COORD", (180, 180, 180)),
+            ("OUT_OF_BOUNDS", (255, 140, 0)),
+            ("DUP_LATLON", (220, 60, 60)),
+        ]
+        with container:
+            for label, (r, g, b) in items:
+                st.markdown(
+                    f"""
+<div style="display:flex;align-items:center;margin-bottom:6px;">
+  <div style="width:14px;height:14px;background:rgb({r},{g},{b});
+              border:1px solid #999;margin-right:8px;"></div>
+  <div style="font-size:13px;">{label}</div>
+</div>
+""",
+                    unsafe_allow_html=True
+                )
+
+    def render_continuous_legend(container, series: pd.Series, title: str):
+        s = pd.to_numeric(series, errors="coerce")
+        s = s[np.isfinite(s)]
+        with container:
+            st.caption(title)
+            if s.empty:
+                st.caption("Tidak ada nilai.")
+                return
+
+            q0 = float(np.nanmin(s))
+            q25 = float(np.nanpercentile(s, 25))
+            q50 = float(np.nanpercentile(s, 50))
+            q75 = float(np.nanpercentile(s, 75))
+            q100 = float(np.nanmax(s))
+
+            st.markdown(
+                """
+<div style="height:12px;border-radius:6px;border:1px solid #bbb;
+background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
+</div>
+""",
+                unsafe_allow_html=True
+            )
+            st.write(
+                pd.DataFrame(
+                    {
+                        "min": [q0],
+                        "p25": [q25],
+                        "median": [q50],
+                        "p75": [q75],
+                        "max": [q100],
+                    }
+                )
+            )
+
+    # -----------------------------
+    # Tentukan metric column + label
+    # -----------------------------
     metric_col = None
     metric_label = None
 
     if layer == "QC Koordinat (flag)":
         metric_col = "qc_flag"
         metric_label = "QC"
-        plot_df["__color__"] = plot_df["qc_flag"].apply(qc_to_rgb)
-
     elif layer == "Kelengkapan data (completeness_pct)":
         metric_col = "completeness_pct"
         metric_label = "Completeness (%)"
-        vmin, vmax = plot_df[metric_col].min(skipna=True), plot_df[metric_col].max(skipna=True)
-        plot_df["__color__"] = plot_df[metric_col].apply(lambda v: value_to_rgb(v, vmin, vmax))
-
     elif layer == "Akumulasi dasarian (total_mm)":
         metric_col = "total_mm"
         metric_label = "Total (mm)"
-        vmin, vmax = plot_df[metric_col].min(skipna=True), plot_df[metric_col].max(skipna=True)
-        plot_df["__color__"] = plot_df[metric_col].apply(lambda v: value_to_rgb(v, vmin, vmax))
-
     elif layer == "CDD terpanjang (CDD_len)":
         metric_col = "CDD_len"
         metric_label = "CDD (hari)"
-        vmin, vmax = plot_df[metric_col].min(skipna=True), plot_df[metric_col].max(skipna=True)
-        plot_df["__color__"] = plot_df[metric_col].apply(lambda v: value_to_rgb(v, vmin, vmax))
-
     elif layer == "CWD terpanjang (CWD_len)":
         metric_col = "CWD_len"
         metric_label = "CWD (hari)"
-        vmin, vmax = plot_df[metric_col].min(skipna=True), plot_df[metric_col].max(skipna=True)
-        plot_df["__color__"] = plot_df[metric_col].apply(lambda v: value_to_rgb(v, vmin, vmax))
-
     elif layer == "CH maksimum (CH_max_mm)":
         metric_col = "CH_max_mm"
         metric_label = "CH max (mm)"
+
+    # -----------------------------
+    # Prepare colors for Scatter
+    # -----------------------------
+    if metric_col == "qc_flag":
+        plot_df["__color__"] = plot_df["qc_flag"].apply(qc_to_rgb)
+    else:
+        # make sure numeric
+        plot_df[metric_col] = pd.to_numeric(plot_df.get(metric_col), errors="coerce")
         vmin, vmax = plot_df[metric_col].min(skipna=True), plot_df[metric_col].max(skipna=True)
         plot_df["__color__"] = plot_df[metric_col].apply(lambda v: value_to_rgb(v, vmin, vmax))
 
+    # -----------------------------
+    # Render Legend (right column)
+    # -----------------------------
+    if metric_col == "qc_flag":
+        render_qc_legend(right)
+    else:
+        render_continuous_legend(right, plot_df[metric_col], metric_label)
+
+    # -----------------------------
     # Tooltip (hover)
+    # -----------------------------
+    tooltip_html = (
+        "<b>{station}</b><br/>"
+        "POS: {pos_id}<br/>"
+        "Lat/Lon: {lat}, {lon}<br/>"
+        "QC: {qc_flag}<br/>"
+    )
+    if metric_col is not None:
+        tooltip_html += f"{metric_label}: " + "{" + metric_col + "}<br/>"
+
     tooltip = {
-        "html": (
-            "<b>{station}</b><br/>"
-            "POS: {pos_id}<br/>"
-            "Lat/Lon: {lat}, {lon}<br/>"
-            "QC: {qc_flag}<br/>"
-            f"{metric_label}: " + ("{" + metric_col + "}" if metric_col else "-") + "<br/>"
-        ),
+        "html": tooltip_html,
         "style": {"backgroundColor": "white", "color": "black"}
     }
 
-    # Pusatkan peta ke median koordinat yang tersedia
+    # -----------------------------
+    # View state
+    # -----------------------------
     center_lat = float(plot_df["lat"].median())
     center_lon = float(plot_df["lon"].median())
-
-    layer_scatter = pdk.Layer(
-        "ScatterplotLayer",
-        data=plot_df,
-        get_position=["lon", "lat"],
-        get_fill_color="__color__",
-        get_radius=point_size * 120,  # radius meter; sesuaikan jika perlu
-        pickable=True,
-        auto_highlight=True,
-    )
-
     view_state = pdk.ViewState(
         latitude=center_lat,
         longitude=center_lon,
@@ -1011,13 +1141,68 @@ elif st.session_state["page"] == "Peta":
         pitch=0
     )
 
-    st.pydeck_chart(pdk.Deck(
-        layers=[layer_scatter],
-        initial_view_state=view_state,
-        tooltip=tooltip,
-        map_style=None  # pakai default
-    ))
+    # -----------------------------
+    # Layers
+    # -----------------------------
+    layers = []
 
+    if mode.startswith("Titik"):
+        layer_scatter = pdk.Layer(
+            "ScatterplotLayer",
+            data=plot_df,
+            get_position=["lon", "lat"],
+            get_fill_color="__color__",
+            get_radius=point_size * 120,
+            pickable=True,
+            auto_highlight=True,
+        )
+        layers.append(layer_scatter)
+
+    else:
+        # Heatmap only for numeric layers
+        if metric_col == "qc_flag":
+            with left:
+                st.warning("Heatmap hanya tersedia untuk layer numerik (bukan QC kategori). Gunakan mode Titik.")
+        else:
+            hm_df = plot_df.copy()
+            hm_df[metric_col] = pd.to_numeric(hm_df[metric_col], errors="coerce")
+            hm_df = hm_df[np.isfinite(hm_df[metric_col])].copy()
+
+            if hm_df.empty:
+                with left:
+                    st.warning("Tidak ada nilai numerik untuk dibuat heatmap.")
+            else:
+                with left:
+                    hm_intensity = st.slider("Heatmap intensity", 0.5, 5.0, 1.2, 0.1)
+                    hm_radius = st.slider("Heatmap radius (meter)", 5000, 60000, 25000, 1000)
+
+                layer_heat = pdk.Layer(
+                    "HeatmapLayer",
+                    data=hm_df,
+                    get_position=["lon", "lat"],
+                    get_weight=metric_col,
+                    radius=hm_radius,
+                    intensity=hm_intensity,
+                    threshold=0.02
+                )
+                layers.append(layer_heat)
+
+    # -----------------------------
+    # Render Map (left column)
+    # -----------------------------
+    with left:
+        st.pydeck_chart(
+            pdk.Deck(
+                layers=layers,
+                initial_view_state=view_state,
+                tooltip=tooltip,
+                map_style=None
+            )
+        )
+
+    # -----------------------------
+    # Tabel ringkasan
+    # -----------------------------
     st.markdown("### Tabel ringkasan (sesuai layer)")
     cols_show = ["station", "pos_id", "lat", "lon", "elev_m", "qc_flag"]
     if metric_col and metric_col in plot_df.columns and metric_col not in cols_show:
@@ -1099,4 +1284,5 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
