@@ -11,8 +11,8 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("Dashboard POS HUJAN Dasarian")
-st.caption("Transpose vertikal → horizontal (urut stasiun fix) + FORMAT BMKG + NUMERIC + QC + Dashboard Ringkasan + CDD/CWD/CHmax")
+st.title("Pos Hujan Dasarian: Rekap, Indeks, dan QC")
+st.caption("Transpose vertikal → horizontal (urut stasiun fix) + FORMAT BMKG + NUMERIC + QC + Ringkasan + CDD/CWD/CHmax")
 
 st.markdown(
     """
@@ -714,5 +714,6 @@ st.download_button(
     mime="text/csv",
     use_container_width=True
 )
+
 
 
