@@ -42,7 +42,7 @@ Syarat file yang di upload:
   - kosong/NaN = missing
 
 Tutorial singkat:
-1. Upload CSV vertikal (boleh lebih dari 1 file).
+1. Upload CSV vertikal start tanggal 1 setiap bulan.
 2. Pilih Year, Month, Dasarian.
 3. Atur threshold dashboard bila perlu.
 4. Klik Run.
@@ -714,4 +714,5 @@ st.download_button(
     mime="text/csv",
     use_container_width=True
 )
+
 
