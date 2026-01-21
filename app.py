@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 from datetime import date
+import pydeck as pdk
 
 # ============================================================
 # Page
@@ -857,10 +858,11 @@ elif st.session_state["page"] == "Tabel":
 # PAGE: Peta
 # ============================================================
 elif st.session_state["page"] == "Peta":
-    st.subheader("Peta titik stasiun (lat lon)")
+    st.subheader("Peta interaktif stasiun (hover untuk tooltip)")
 
     coords_final = st.session_state["coords_final"].copy()
 
+    # Join hasil jika tersedia
     if st.session_state.get("outputs") is not None:
         outputs = st.session_state["outputs"]
         derived = st.session_state["derived"]
@@ -870,15 +872,35 @@ elif st.session_state["page"] == "Peta":
         cdd_cwd_df = derived["cdd_cwd_df"][["station", "CDD_len", "CWD_len", "CH_max_mm", "CH_max_TGL"]].copy()
 
         map_df = coords_final.merge(qc_station, on="station", how="left") \
-                            .merge(station_dash, on="station", how="left") \
-                            .merge(cdd_cwd_df, on="station", how="left")
+                             .merge(station_dash, on="station", how="left") \
+                             .merge(cdd_cwd_df, on="station", how="left")
         st.caption("Peta sudah digabung dengan hasil curah hujan, QC, dan indeks.")
     else:
         map_df = coords_final.copy()
         st.info("Hasil curah hujan belum diproses. Peta hanya menampilkan koordinat dan QC koordinat.")
 
+    # Filter koordinat
+    c1, c2, c3 = st.columns([1, 1, 1.2])
+    with c1:
+        hide_missing = st.checkbox("Sembunyikan stasiun tanpa koordinat", value=True)
+    with c2:
+        show_only_bad = st.checkbox("Tampilkan hanya QC koordinat bermasalah", value=False)
+    with c3:
+        point_size = st.slider("Ukuran titik", min_value=3, max_value=18, value=9, step=1)
+
+    plot_df = map_df.copy()
+    if hide_missing:
+        plot_df = plot_df[plot_df["lat"].notna() & plot_df["lon"].notna()].copy()
+    if show_only_bad:
+        plot_df = plot_df[plot_df["qc_flag"].isin(["MISSING_COORD", "OUT_OF_BOUNDS", "DUP_LATLON"])].copy()
+
+    if plot_df.empty:
+        st.warning("Tidak ada titik yang bisa ditampilkan (cek filter atau data koordinat).")
+        st.stop()
+
+    # Pilih layer untuk warna
     layer = st.selectbox(
-        "Pilih layer peta",
+        "Warna berdasarkan",
         options=[
             "QC Koordinat (flag)",
             "Kelengkapan data (completeness_pct)",
@@ -890,47 +912,118 @@ elif st.session_state["page"] == "Peta":
         index=0
     )
 
-    c1, c2, c3 = st.columns([1, 1, 1.2])
-    with c1:
-        hide_missing = st.checkbox("Sembunyikan stasiun tanpa koordinat", value=True)
-    with c2:
-        show_only_bad = st.checkbox("Tampilkan hanya QC bermasalah", value=False)
-    with c3:
-        st.caption("Catatan: st.map tidak mendukung warna per titik. Warna/QC ditampilkan lewat tabel ringkas di bawah.")
+    # ------------------------------------------------------------
+    # Color logic (tanpa library tambahan)
+    # - Untuk numeric: gradient sederhana dari nilai min→max
+    # - Untuk QC: warna kategori
+    # ------------------------------------------------------------
+    def clamp01(x: float) -> float:
+        return max(0.0, min(1.0, x))
 
-    plot_df = map_df.copy()
-    if hide_missing:
-        plot_df = plot_df[plot_df["lat"].notna() & plot_df["lon"].notna()].copy()
-    if show_only_bad:
-        plot_df = plot_df[plot_df["qc_flag"].isin(["MISSING_COORD", "OUT_OF_BOUNDS", "DUP_LATLON"])].copy()
+    def value_to_rgb(v, vmin, vmax):
+        # gradient: rendah -> biru, tinggi -> merah (sederhana)
+        if pd.isna(v) or pd.isna(vmin) or pd.isna(vmax) or vmax == vmin:
+            return [160, 160, 160, 180]
+        t = clamp01((float(v) - float(vmin)) / (float(vmax) - float(vmin)))
+        r = int(60 + 180 * t)
+        g = int(80 + 60 * (1 - t))
+        b = int(220 - 180 * t)
+        return [r, g, b, 190]
 
-    if plot_df.empty:
-        st.warning("Tidak ada titik yang bisa ditampilkan (cek filter atau data koordinat).")
-    else:
-        st.map(plot_df.rename(columns={"lat": "latitude", "lon": "longitude"})[["latitude", "longitude"]])
+    def qc_to_rgb(flag: str):
+        m = {
+            "OK": [30, 160, 60, 190],
+            "MISSING_COORD": [180, 180, 180, 160],
+            "OUT_OF_BOUNDS": [255, 140, 0, 190],
+            "DUP_LATLON": [220, 60, 60, 190],
+        }
+        return m.get(str(flag), [140, 140, 140, 170])
 
-    st.markdown("### Ringkasan layer (tabel)")
+    # Tentukan kolom metrik + label tooltip
+    metric_col = None
+    metric_label = None
+
+    if layer == "QC Koordinat (flag)":
+        metric_col = "qc_flag"
+        metric_label = "QC"
+        plot_df["__color__"] = plot_df["qc_flag"].apply(qc_to_rgb)
+
+    elif layer == "Kelengkapan data (completeness_pct)":
+        metric_col = "completeness_pct"
+        metric_label = "Completeness (%)"
+        vmin, vmax = plot_df[metric_col].min(skipna=True), plot_df[metric_col].max(skipna=True)
+        plot_df["__color__"] = plot_df[metric_col].apply(lambda v: value_to_rgb(v, vmin, vmax))
+
+    elif layer == "Akumulasi dasarian (total_mm)":
+        metric_col = "total_mm"
+        metric_label = "Total (mm)"
+        vmin, vmax = plot_df[metric_col].min(skipna=True), plot_df[metric_col].max(skipna=True)
+        plot_df["__color__"] = plot_df[metric_col].apply(lambda v: value_to_rgb(v, vmin, vmax))
+
+    elif layer == "CDD terpanjang (CDD_len)":
+        metric_col = "CDD_len"
+        metric_label = "CDD (hari)"
+        vmin, vmax = plot_df[metric_col].min(skipna=True), plot_df[metric_col].max(skipna=True)
+        plot_df["__color__"] = plot_df[metric_col].apply(lambda v: value_to_rgb(v, vmin, vmax))
+
+    elif layer == "CWD terpanjang (CWD_len)":
+        metric_col = "CWD_len"
+        metric_label = "CWD (hari)"
+        vmin, vmax = plot_df[metric_col].min(skipna=True), plot_df[metric_col].max(skipna=True)
+        plot_df["__color__"] = plot_df[metric_col].apply(lambda v: value_to_rgb(v, vmin, vmax))
+
+    elif layer == "CH maksimum (CH_max_mm)":
+        metric_col = "CH_max_mm"
+        metric_label = "CH max (mm)"
+        vmin, vmax = plot_df[metric_col].min(skipna=True), plot_df[metric_col].max(skipna=True)
+        plot_df["__color__"] = plot_df[metric_col].apply(lambda v: value_to_rgb(v, vmin, vmax))
+
+    # Tooltip (hover)
+    tooltip = {
+        "html": (
+            "<b>{station}</b><br/>"
+            "POS: {pos_id}<br/>"
+            "Lat/Lon: {lat}, {lon}<br/>"
+            "QC: {qc_flag}<br/>"
+            f"{metric_label}: " + ("{" + metric_col + "}" if metric_col else "-") + "<br/>"
+        ),
+        "style": {"backgroundColor": "white", "color": "black"}
+    }
+
+    # Pusatkan peta ke median koordinat yang tersedia
+    center_lat = float(plot_df["lat"].median())
+    center_lon = float(plot_df["lon"].median())
+
+    layer_scatter = pdk.Layer(
+        "ScatterplotLayer",
+        data=plot_df,
+        get_position=["lon", "lat"],
+        get_fill_color="__color__",
+        get_radius=point_size * 120,  # radius meter; sesuaikan jika perlu
+        pickable=True,
+        auto_highlight=True,
+    )
+
+    view_state = pdk.ViewState(
+        latitude=center_lat,
+        longitude=center_lon,
+        zoom=8.2,
+        pitch=0
+    )
+
+    st.pydeck_chart(pdk.Deck(
+        layers=[layer_scatter],
+        initial_view_state=view_state,
+        tooltip=tooltip,
+        map_style=None  # pakai default
+    ))
+
+    st.markdown("### Tabel ringkasan (sesuai layer)")
     cols_show = ["station", "pos_id", "lat", "lon", "elev_m", "qc_flag"]
-    if layer == "Kelengkapan data (completeness_pct)" and "completeness_pct" in map_df.columns:
-        cols_show += ["completeness_pct"]
-    elif layer == "Akumulasi dasarian (total_mm)" and "total_mm" in map_df.columns:
-        cols_show += ["total_mm", "max_mm", "tgl_max"]
-    elif layer == "CDD terpanjang (CDD_len)" and "CDD_len" in map_df.columns:
-        cols_show += ["CDD_len"]
-    elif layer == "CWD terpanjang (CWD_len)" and "CWD_len" in map_df.columns:
-        cols_show += ["CWD_len"]
-    elif layer == "CH maksimum (CH_max_mm)" and "CH_max_mm" in map_df.columns:
-        cols_show += ["CH_max_mm", "CH_max_TGL"]
+    if metric_col and metric_col in plot_df.columns and metric_col not in cols_show:
+        cols_show.append(metric_col)
+    st.dataframe(plot_df[cols_show], use_container_width=True, height=620)
 
-    cols_show = [c for c in cols_show if c in map_df.columns]
-    st.dataframe(map_df[cols_show], use_container_width=True, height=620)
-
-    with st.expander("QC Koordinat: stasiun tanpa koordinat / out of bounds / duplikat", expanded=False):
-        qc_bad = coords_final[coords_final["qc_flag"].isin(["MISSING_COORD", "OUT_OF_BOUNDS", "DUP_LATLON"])].copy()
-        if qc_bad.empty:
-            st.write("Tidak ada isu QC koordinat yang terdeteksi.")
-        else:
-            st.dataframe(qc_bad, use_container_width=True, height=520)
 
 # ============================================================
 # PAGE: Download
@@ -1006,3 +1099,4 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
