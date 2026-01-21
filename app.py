@@ -13,10 +13,30 @@ st.title("Transposer POS HUJAN (Vertikal → Horizontal) + QC Dasarian")
 st.markdown(
     """
 Aplikasi ini:
-- Mengubah data curah hujan harian format vertikal menjadi tabel horizontal (kolom stasiun) dengan urutan kolom mengikuti `HORIZONTAL_COLS`.
+- Mengubah data curah hujan harian format vertikal menjadi tabel horizontal (kolom stasiun) dengan urutan kolom mengikuti `Format urutan excel HTH`.
 - Menerapkan aturan QC nilai (FORMAT BMKG dan NUMERIC).
 - Menghasilkan ringkasan kelengkapan per stasiun dan per hari, stasiun kosong total, serta stasiun kosong pada hari terakhir dalam jendela dasarian.
 - Memungkinkan pemilihan file output untuk diunduh.
+
+Syarat file yang di upload:
+- Format file: CSV.
+- Minimal memiliki kolom berikut (nama kolom harus persis):
+  - `NAME`
+  - `DATA TIMESTAMP`
+  - `RAINFALL DAY MM`
+- `DATA TIMESTAMP` harus bisa dibaca sebagai tanggal/waktu oleh Pandas (contoh: `2026-01-05 00:00:00`).
+- Isi `RAINFALL DAY MM` diharapkan numerik atau kode BMKG:
+  - `0` = tidak hujan
+  - `8888` = trace (hujan sangat kecil)
+  - `9999` = missing / alat bermasalah
+  - kosong/NaN = missing
+
+Tutorial singkat:
+1. Klik **Upload CSV vertikal** lalu pilih file CSV (file csv dimulai dari tanggal 1).
+2. Pilih **Year**, **Month**, dan **Dasarian**.
+3. Klik **Run transpose + QC** untuk memproses data.
+4. Lihat hasil pada bagian **Tampilan tabel** (FORMAT BMKG atau NUMERIC).
+5. Pada bagian **Download**, pilih file yang diinginkan lalu klik tombol download.
 
 Aturan nilai FORMAT BMKG:
 - raw = 0 → "-"
@@ -468,3 +488,4 @@ st.download_button(
     mime="text/csv",
     use_container_width=True
 )
+
