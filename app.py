@@ -12,11 +12,11 @@ st.title("Transposer POS HUJAN (Vertikal → Horizontal) + QC Dasarian")
 
 st.markdown(
     """
-Notebook ini diubah menjadi aplikasi Streamlit untuk:
-- Transpose data curah hujan harian format vertikal menjadi horizontal (kolom stasiun).
-- QC kelengkapan per stasiun dan per hari.
-- Ringkasan stasiun kosong pada hari terakhir dalam jendela dasarian.
-- Output tersedia dalam format DISPLAY dan NUMERIC.
+Aplikasi ini:
+- Mengubah data curah hujan harian format vertikal menjadi tabel horizontal (kolom stasiun) dengan urutan kolom mengikuti `HORIZONTAL_COLS`.
+- Menerapkan aturan QC nilai (DISPLAY dan NUMERIC).
+- Menghasilkan ringkasan kelengkapan per stasiun dan per hari, stasiun kosong total, serta stasiun kosong pada hari terakhir dalam jendela dasarian.
+- Memungkinkan pemilihan file output untuk diunduh.
 
 Aturan nilai DISPLAY:
 - raw = 0 → "-"
@@ -272,73 +272,105 @@ with st.sidebar:
 
     run = st.button("Run transpose + QC", type="primary", use_container_width=True)
 
+    reset = st.button("Reset hasil", use_container_width=True)
+
 # ----------------------------
-# Main run
+# Session state init
 # ----------------------------
-if not run:
+if "outputs" not in st.session_state:
+    st.session_state["outputs"] = None
+if "meta" not in st.session_state:
+    st.session_state["meta"] = None
+
+if reset:
+    st.session_state["outputs"] = None
+    st.session_state["meta"] = None
+    st.rerun()
+
+# ----------------------------
+# Input gating
+# ----------------------------
+if not up:
     st.info("Upload file, pilih Year, Month, Dasarian, lalu klik Run transpose + QC.")
     st.stop()
 
-if not up:
-    st.error("Belum ada file yang diupload.")
+# ----------------------------
+# Run processing when button clicked
+# ----------------------------
+if run:
+    YEAR = int(year)
+    MM = str(month)
+    MONTH_STR = f"{YEAR}-{MM}"
+    das_n = int(dasarian)
+
+    last_day = month_end_day(YEAR, int(MM))
+    end_day = 10 if das_n == 1 else (20 if das_n == 2 else last_day)
+
+    # Read and concat uploads
+    dfs = []
+    bad_files = []
+    for f in up:
+        try:
+            tmp = pd.read_csv(f)
+            tmp["__source_file__"] = f.name
+            dfs.append(tmp)
+        except Exception:
+            bad_files.append(f.name)
+
+    if bad_files:
+        st.warning(f"File gagal dibaca dan diabaikan: {bad_files}")
+
+    if not dfs:
+        st.error("Tidak ada file valid untuk diproses.")
+        st.stop()
+
+    df = pd.concat(dfs, ignore_index=True)
+
+    required_cols = ["NAME", "DATA TIMESTAMP", "RAINFALL DAY MM"]
+    missing_cols = [c for c in required_cols if c not in df.columns]
+    if missing_cols:
+        st.error(f"Kolom wajib tidak ditemukan: {missing_cols}")
+        st.stop()
+
+    df["DATA TIMESTAMP"] = pd.to_datetime(df["DATA TIMESTAMP"], errors="coerce")
+    df = df[df["DATA TIMESTAMP"].notna()].copy()
+
+    df_month = df[df["DATA TIMESTAMP"].dt.strftime("%Y-%m") == MONTH_STR].copy()
+    if df_month.empty:
+        st.error(f"Tidak ada baris untuk {MONTH_STR}. Periksa pilihan bulan atau data.")
+        st.stop()
+
+    df_month["TGL"] = df_month["DATA TIMESTAMP"].dt.day
+    df_month = df_month[df_month["TGL"].between(1, end_day)].copy()
+    if df_month.empty:
+        st.error(f"Tidak ada baris pada rentang tanggal 1 s.d. {end_day} untuk {MONTH_STR}.")
+        st.stop()
+
+    outputs = build_outputs(df_month, end_day)
+
+    st.session_state["outputs"] = outputs
+    st.session_state["meta"] = {
+        "MONTH_STR": MONTH_STR,
+        "das_n": das_n,
+        "end_day": end_day,
+        "YEAR": YEAR,
+        "MM": MM
+    }
+
+# If not processed yet, stop here
+if st.session_state["outputs"] is None:
+    st.warning("Klik Run transpose + QC untuk memproses data.")
     st.stop()
 
-YEAR = int(year)
-MM = str(month)
-MONTH_STR = f"{YEAR}-{MM}"
-das_n = int(dasarian)
+# ----------------------------
+# Use stored outputs for display and downloads
+# ----------------------------
+outputs = st.session_state["outputs"]
+meta = st.session_state["meta"]
 
-last_day = month_end_day(YEAR, int(MM))
-end_day = 10 if das_n == 1 else (20 if das_n == 2 else last_day)
-
-st.subheader("Parameter")
-st.write(f"Periode: **{MONTH_STR}**")
-st.write(f"Dasarian: **{das_n}** | Rentang tanggal: **1 s.d. {end_day}**")
-st.write(f"Total stasiun (kolom output): **{len(HORIZONTAL_COLS)}**")
-
-# Read and concat uploads
-dfs = []
-bad_files = []
-for f in up:
-    try:
-        tmp = pd.read_csv(f)
-        tmp["__source_file__"] = f.name
-        dfs.append(tmp)
-    except Exception:
-        bad_files.append(f.name)
-
-if bad_files:
-    st.warning(f"File gagal dibaca dan diabaikan: {bad_files}")
-
-if not dfs:
-    st.error("Tidak ada file valid untuk diproses.")
-    st.stop()
-
-df = pd.concat(dfs, ignore_index=True)
-
-required_cols = ["NAME", "DATA TIMESTAMP", "RAINFALL DAY MM"]
-missing_cols = [c for c in required_cols if c not in df.columns]
-if missing_cols:
-    st.error(f"Kolom wajib tidak ditemukan: {missing_cols}")
-    st.stop()
-
-# Parse datetime safely
-df["DATA TIMESTAMP"] = pd.to_datetime(df["DATA TIMESTAMP"], errors="coerce")
-df = df[df["DATA TIMESTAMP"].notna()].copy()
-
-df_month = df[df["DATA TIMESTAMP"].dt.strftime("%Y-%m") == MONTH_STR].copy()
-if df_month.empty:
-    st.error(f"Tidak ada baris untuk {MONTH_STR}. Periksa pilihan bulan atau data.")
-    st.stop()
-
-df_month["TGL"] = df_month["DATA TIMESTAMP"].dt.day
-df_month = df_month[df_month["TGL"].between(1, end_day)].copy()
-if df_month.empty:
-    st.error(f"Tidak ada baris pada rentang tanggal 1 s.d. {end_day} untuk {MONTH_STR}.")
-    st.stop()
-
-# Build outputs
-outputs = build_outputs(df_month, end_day)
+MONTH_STR = meta["MONTH_STR"]
+das_n = meta["das_n"]
+end_day = meta["end_day"]
 
 wide_display_out = outputs["wide_display_out"]
 wide_num_out = outputs["wide_num_out"]
@@ -351,9 +383,14 @@ qc_empty_last_day = outputs["qc_empty_last_day"]
 # ----------------------------
 # Highlights
 # ----------------------------
+st.subheader("Parameter")
+st.write(f"Periode: **{MONTH_STR}**")
+st.write(f"Dasarian: **{das_n}** | Rentang tanggal: **1 s.d. {end_day}**")
+st.write(f"Total stasiun (kolom output): **{len(HORIZONTAL_COLS)}**")
+
 st.subheader("Ringkasan QC")
 
-total_cells = (end_day) * len(HORIZONTAL_COLS)
+total_cells = end_day * len(HORIZONTAL_COLS)
 cells_with_row = int((wide_display_out.drop(columns=["TGL"]) != "x").to_numpy().sum())
 coverage_pct = round(cells_with_row / total_cells * 100, 2)
 
@@ -380,7 +417,7 @@ if not qc_unmapped.empty:
         st.dataframe(qc_unmapped, use_container_width=True)
 
 # ----------------------------
-# View choice
+# View choice (this now works because outputs persist)
 # ----------------------------
 st.subheader("Tampilan tabel")
 view_choice = st.radio(
