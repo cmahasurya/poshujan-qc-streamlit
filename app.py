@@ -7,25 +7,46 @@ from datetime import date
 # Page
 # ============================================================
 st.set_page_config(
-    page_title="Dashboard POS HUJAN Dasarian",
+    page_title="Pos Hujan Dasarian: Rekap, Indeks, dan QC",
     layout="wide"
 )
 
 st.title("Pos Hujan Dasarian: Rekap, Indeks, dan QC")
 st.caption("Transpose vertikal → horizontal (urut stasiun fix) + FORMAT BMKG + NUMERIC + QC + Ringkasan + CDD/CWD/CHmax")
 
-st.markdown(
-    """
+# ============================================================
+# Tabs navigation via query params + buttons
+# ============================================================
+TAB_NAMES = ["Input", "Hasil", "QC", "Tabel", "Download"]
+
+def set_active_tab(name: str):
+    if name in TAB_NAMES:
+        st.query_params["tab"] = name
+
+def get_active_tab() -> str:
+    tab = st.query_params.get("tab", "Input")
+    if isinstance(tab, list):
+        tab = tab[0]
+    return tab if tab in TAB_NAMES else "Input"
+
+def to_csv_bytes(df: pd.DataFrame) -> bytes:
+    return df.to_csv(index=False).encode("utf-8")
+
+# ------------------------------------------------------------
+# User help markdown
+# ------------------------------------------------------------
+with st.expander("Panduan dan syarat file (klik untuk buka)"):
+    st.markdown(
+        """
 Aplikasi ini:
 - Mengubah data curah hujan harian format vertikal menjadi tabel horizontal (kolom stasiun) dengan urutan kolom mengikuti `HORIZONTAL_COLS`.
 - Menyediakan 2 format hasil:
   - **FORMAT BMKG**: `x`, `-`, `0`, atau angka hujan.
   - **NUMERIC**: angka hujan (trace 0.1), missing = NaN.
 - Menyediakan QC kelengkapan, nama unmapped, gap, dan stasiun kosong pada hari terakhir.
-- Menyediakan dashboard ringkasan akumulasi dan kejadian hujan.
-- Menghitung indeks run:
-  - **CDD terpanjang**: run terpanjang hari kering (rain = 0.0) dalam window.
-  - **CWD terpanjang**: run terpanjang hari hujan (rain >= batas hari hujan) dalam window.
+- Menghitung indeks:
+  - **CDD terpanjang**: run hari kering (rain = 0.0) dalam window.
+  - **CWD terpanjang**: run hari hujan (rain >= batas hari hujan) dalam window.
   - **CH maksimum dasarian ini**: maksimum hujan harian per stasiun dalam window.
 
 Syarat file yang di upload:
@@ -42,13 +63,13 @@ Syarat file yang di upload:
   - kosong/NaN = missing
 
 Tutorial singkat:
-1. Upload CSV vertikal start tanggal 1 setiap bulan.
+1. Upload CSV vertikal (boleh lebih dari 1 file).
 2. Pilih Year, Month, Dasarian.
-3. Atur threshold dashboard bila perlu.
+3. Atur threshold bila perlu.
 4. Klik Run.
-5. Lihat dashboard ringkasan, QC, tabel output, dan unduh output yang diperlukan.
+5. Klik tombol navigasi untuk lompat ke tab hasil yang diinginkan.
 """
-)
+    )
 
 # ============================================================
 # HARD CODE: HORIZONTAL_COLS + NAME_MAP
@@ -131,7 +152,7 @@ NAME_MAP = {
 }
 
 # ============================================================
-# Helpers
+# Computation helpers
 # ============================================================
 def month_end_day(year: int, month: int) -> int:
     month_start = pd.Timestamp(year=year, month=month, day=1)
@@ -141,16 +162,7 @@ def month_end_day(year: int, month: int) -> int:
 def normalize_station_name(s: pd.Series) -> pd.Series:
     return s.astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
 
-def to_csv_bytes(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=False).encode("utf-8")
-
 def longest_run(series: pd.Series, condition_func):
-    """
-    Return (max_len, start_day, end_day) for the longest consecutive run
-    where condition_func(value) is True.
-    Missing (NaN) breaks the run.
-    series index assumed to be day numbers (1..end_day).
-    """
     max_len = 0
     max_start = None
     max_end = None
@@ -179,15 +191,8 @@ def longest_run(series: pd.Series, condition_func):
     return int(max_len), max_start, max_end
 
 def compute_cdd_cwd(wide_num_out: pd.DataFrame, wet_threshold: float = 0.1):
-    """
-    Compute per-station:
-    - Longest CDD: run of rain == 0.0
-    - Longest CWD: run of rain >= wet_threshold
-    - CH max within window and its day
-    Missing breaks runs.
-    """
     num = wide_num_out.drop(columns=["TGL"]).apply(pd.to_numeric, errors="coerce")
-    num.index = wide_num_out["TGL"].values  # day index
+    num.index = wide_num_out["TGL"].values
 
     rows = []
     for station in num.columns:
@@ -215,8 +220,7 @@ def compute_cdd_cwd(wide_num_out: pd.DataFrame, wet_threshold: float = 0.1):
             "CH_max_TGL": ch_tgl,
         })
 
-    df = pd.DataFrame(rows)
-    return df
+    return pd.DataFrame(rows)
 
 def build_outputs(df_month: pd.DataFrame, end_day: int):
     all_days = np.arange(1, end_day + 1)
@@ -228,7 +232,6 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
     df_month["raw"] = pd.to_numeric(df_month["RAINFALL DAY MM"], errors="coerce")
     df_month["has_row"] = 1
 
-    # NUMERIC mapping
     rain_num = df_month["raw"].copy()
     rain_num[df_month["raw"].isna()] = np.nan
     rain_num[df_month["raw"] == 9999] = np.nan
@@ -249,7 +252,6 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
         .reindex(index=all_days, columns=HORIZONTAL_COLS)
     )
 
-    # FORMAT BMKG
     wide_bmkg = pd.DataFrame("x", index=wide_raw.index, columns=wide_raw.columns)
     row_exists = present.notna()
     wide_bmkg = wide_bmkg.mask(row_exists & (wide_raw == 0), "-")
@@ -263,13 +265,13 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
     wide_num_out = wide_num.copy()
     wide_num_out.insert(0, "TGL", wide_num_out.index)
 
-    # QC summaries
     station_summary = pd.DataFrame({
         "station": HORIZONTAL_COLS,
         "days_present": present.notna().sum(axis=0).astype(int).values,
         "total_days": len(present.index),
     })
     station_summary["completeness_pct"] = (station_summary["days_present"] / station_summary["total_days"] * 100).round(1)
+    qc_station = station_summary.sort_values(["completeness_pct", "station"], ascending=[True, True])
 
     day_summary = pd.DataFrame({
         "TGL": present.index,
@@ -277,6 +279,7 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
         "total_stations": len(HORIZONTAL_COLS),
     })
     day_summary["completeness_pct"] = (day_summary["stations_present"] / day_summary["total_stations"] * 100).round(1)
+    qc_day = day_summary
 
     horizontal_set = set(HORIZONTAL_COLS)
     mapped_not_in_horizontal = sorted(set(df_month["NAME_H"].unique()) - horizontal_set)
@@ -317,8 +320,8 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
     return {
         "wide_bmkg_out": wide_bmkg_out,
         "wide_num_out": wide_num_out,
-        "qc_station": station_summary.sort_values(["completeness_pct", "station"], ascending=[True, True]),
-        "qc_day": day_summary,
+        "qc_station": qc_station,
+        "qc_day": qc_day,
         "qc_unmapped": qc_unmapped,
         "qc_gap": qc_gap,
         "qc_empty_last_day": qc_empty_last_day,
@@ -326,20 +329,14 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
 
 def build_dashboard(wide_num_out: pd.DataFrame, rainy_threshold: float, heavy_threshold: float):
     num = wide_num_out.drop(columns=["TGL"]).apply(pd.to_numeric, errors="coerce")
+    num2 = num.copy()
+    num2.index = wide_num_out["TGL"].values
 
-    # Station aggregates
     station_total = num.sum(axis=0, skipna=True)
     station_valid_days = num.notna().sum(axis=0)
     station_rainy_days = (num >= rainy_threshold).sum(axis=0, skipna=True)
     station_heavy_days = (num >= heavy_threshold).sum(axis=0, skipna=True)
     station_max = num.max(axis=0, skipna=True)
-    station_tgl_max = num.idxmax(axis=0, skipna=True).astype("Int64")  # idx is row number, not TGL
-
-    # Fix tgl_max with actual day numbers
-    num_idx = wide_num_out["TGL"].values
-    # idxmax returns positional index (0..n-1) when index is default, so ensure index = TGL
-    num2 = num.copy()
-    num2.index = num_idx
     station_tgl_max = num2.idxmax(axis=0, skipna=True).astype("Int64")
 
     station_dash = pd.DataFrame({
@@ -352,7 +349,6 @@ def build_dashboard(wide_num_out: pd.DataFrame, rainy_threshold: float, heavy_th
         "tgl_max": station_tgl_max.values,
     }).sort_values(["total_mm", "station"], ascending=[False, True])
 
-    # Day aggregates
     day_total = num.sum(axis=1, skipna=True)
     day_mean = num.mean(axis=1, skipna=True)
     day_valid_stations = num.notna().sum(axis=1)
@@ -368,7 +364,6 @@ def build_dashboard(wide_num_out: pd.DataFrame, rainy_threshold: float, heavy_th
         "stations_heavy_ge_thr": day_heavy_stations.values,
     }).sort_values("TGL")
 
-    # Global highlights
     total_mm_all_cells = float(np.nansum(num.to_numpy()))
     total_valid_cells = int(np.isfinite(num.to_numpy()).sum())
     total_cells = int(num.size)
@@ -386,334 +381,420 @@ def build_dashboard(wide_num_out: pd.DataFrame, rainy_threshold: float, heavy_th
     }
 
 # ============================================================
-# Sidebar controls
-# ============================================================
-with st.sidebar:
-    st.header("Input")
-
-    up = st.file_uploader(
-        "Upload CSV vertikal",
-        type=["csv"],
-        accept_multiple_files=True
-    )
-
-    today = date.today()
-    year = st.number_input("Year", min_value=2000, max_value=2100, value=int(today.year), step=1)
-    month = st.selectbox("Month", options=[f"{i:02d}" for i in range(1, 13)], index=int(today.month) - 1)
-
-    dasarian = st.radio(
-        "Dasarian",
-        options=["1", "2", "3"],
-        format_func=lambda x: "Das 1 (1-10)" if x == "1" else ("Das 2 (1-20)" if x == "2" else "Das 3 (Full month)" ),
-        index=0
-    )
-
-    st.divider()
-    st.subheader("Dashboard thresholds")
-    rainy_thr = st.number_input("Batas hari hujan untuk CWD dan hitungan hari hujan (mm)", min_value=0.0, value=0.1, step=0.1)
-    heavy_thr = st.number_input("Batas hujan lebat (mm)", min_value=0.0, value=20.0, step=1.0)
-
-    st.divider()
-    run = st.button("Run transpose + QC", type="primary", use_container_width=True)
-    reset = st.button("Reset hasil", use_container_width=True)
-
-# ============================================================
 # Session state init
 # ============================================================
 if "outputs" not in st.session_state:
     st.session_state["outputs"] = None
 if "meta" not in st.session_state:
     st.session_state["meta"] = None
+if "derived" not in st.session_state:
+    st.session_state["derived"] = None
 
-if reset:
+def clear_results():
     st.session_state["outputs"] = None
     st.session_state["meta"] = None
-    st.rerun()
-
-if not up:
-    st.info("Upload file, pilih Year, Month, Dasarian, lalu klik Run transpose + QC.")
-    st.stop()
+    st.session_state["derived"] = None
 
 # ============================================================
-# Process when Run clicked
+# Tabs layout
 # ============================================================
-if run:
-    YEAR = int(year)
-    MM = str(month)
-    MONTH_STR = f"{YEAR}-{MM}"
-    das_n = int(dasarian)
+tab_input, tab_hasil, tab_qc, tab_tabel, tab_download = st.tabs(TAB_NAMES)
 
-    last_day = month_end_day(YEAR, int(MM))
-    end_day = 10 if das_n == 1 else (20 if das_n == 2 else last_day)
+# ============================================================
+# TAB: Input
+# ============================================================
+with tab_input:
+    st.subheader("Input data")
 
-    dfs = []
-    bad_files = []
-    for f in up:
-        try:
-            tmp = pd.read_csv(f)
-            tmp["__source_file__"] = f.name
-            dfs.append(tmp)
-        except Exception:
-            bad_files.append(f.name)
+    up = st.file_uploader(
+        "Upload CSV vertikal",
+        type=["csv"],
+        accept_multiple_files=True,
+        key="uploader"
+    )
 
-    if bad_files:
-        st.warning(f"File gagal dibaca dan diabaikan: {bad_files}")
+    cA, cB, cC = st.columns([1, 1, 1.2])
 
-    if not dfs:
-        st.error("Tidak ada file valid untuk diproses.")
+    today = date.today()
+    with cA:
+        year = st.number_input("Year", min_value=2000, max_value=2100, value=int(today.year), step=1)
+    with cB:
+        month = st.selectbox("Month", options=[f"{i:02d}" for i in range(1, 13)], index=int(today.month) - 1)
+    with cC:
+        dasarian = st.radio(
+            "Dasarian",
+            options=["1", "2", "3"],
+            format_func=lambda x: "Das 1 (1-10)" if x == "1" else ("Das 2 (1-20)" if x == "2" else "Das 3 (Full month)"),
+            index=0,
+            horizontal=True
+        )
+
+    st.markdown("**Threshold ringkasan**")
+    t1, t2 = st.columns(2)
+    with t1:
+        rainy_thr = st.number_input("Batas hari hujan untuk CWD dan hitungan hari hujan (mm)", min_value=0.0, value=0.1, step=0.1)
+    with t2:
+        heavy_thr = st.number_input("Batas hujan lebat (mm)", min_value=0.0, value=20.0, step=1.0)
+
+    b1, b2, b3, b4, b5 = st.columns([1, 1, 1, 1, 1])
+    with b1:
+        run = st.button("Run", type="primary", use_container_width=True)
+    with b2:
+        reset = st.button("Reset hasil", use_container_width=True)
+    with b3:
+        if st.button("Buka Hasil", use_container_width=True):
+            set_active_tab("Hasil")
+            st.rerun()
+    with b4:
+        if st.button("Buka QC", use_container_width=True):
+            set_active_tab("QC")
+            st.rerun()
+    with b5:
+        if st.button("Buka Download", use_container_width=True):
+            set_active_tab("Download")
+            st.rerun()
+
+    if reset:
+        clear_results()
+        st.success("Hasil direset.")
+        st.rerun()
+
+    if run:
+        if not up:
+            st.error("Upload file CSV terlebih dahulu.")
+            st.stop()
+
+        YEAR = int(year)
+        MM = str(month)
+        MONTH_STR = f"{YEAR}-{MM}"
+        das_n = int(dasarian)
+
+        last_day = month_end_day(YEAR, int(MM))
+        end_day = 10 if das_n == 1 else (20 if das_n == 2 else last_day)
+
+        dfs = []
+        bad_files = []
+        for f in up:
+            try:
+                tmp = pd.read_csv(f)
+                tmp["__source_file__"] = f.name
+                dfs.append(tmp)
+            except Exception:
+                bad_files.append(f.name)
+
+        if bad_files:
+            st.warning(f"File gagal dibaca dan diabaikan: {bad_files}")
+        if not dfs:
+            st.error("Tidak ada file valid untuk diproses.")
+            st.stop()
+
+        df = pd.concat(dfs, ignore_index=True)
+
+        required_cols = ["NAME", "DATA TIMESTAMP", "RAINFALL DAY MM"]
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            st.error(f"Kolom wajib tidak ditemukan: {missing_cols}")
+            st.stop()
+
+        df["DATA TIMESTAMP"] = pd.to_datetime(df["DATA TIMESTAMP"], errors="coerce")
+        df = df[df["DATA TIMESTAMP"].notna()].copy()
+
+        df_month = df[df["DATA TIMESTAMP"].dt.strftime("%Y-%m") == MONTH_STR].copy()
+        if df_month.empty:
+            st.error(f"Tidak ada baris untuk {MONTH_STR}. Periksa pilihan bulan atau data.")
+            st.stop()
+
+        df_month["TGL"] = df_month["DATA TIMESTAMP"].dt.day
+        df_month = df_month[df_month["TGL"].between(1, end_day)].copy()
+        if df_month.empty:
+            st.error(f"Tidak ada baris pada rentang tanggal 1 s.d. {end_day} untuk {MONTH_STR}.")
+            st.stop()
+
+        outputs = build_outputs(df_month, end_day)
+        station_dash, day_dash, hi = build_dashboard(outputs["wide_num_out"], rainy_thr, heavy_thr)
+        cdd_cwd_df = compute_cdd_cwd(outputs["wide_num_out"], wet_threshold=rainy_thr)
+
+        top_cdd = cdd_cwd_df.sort_values(["CDD_len", "station"], ascending=[False, True]).head(15)
+        top_cwd = cdd_cwd_df.sort_values(["CWD_len", "station"], ascending=[False, True]).head(15)
+
+        best_cdd = cdd_cwd_df.loc[cdd_cwd_df["CDD_len"].idxmax()] if len(cdd_cwd_df) else None
+        best_cwd = cdd_cwd_df.loc[cdd_cwd_df["CWD_len"].idxmax()] if len(cdd_cwd_df) else None
+        best_ch = cdd_cwd_df.loc[cdd_cwd_df["CH_max_mm"].idxmax()] if cdd_cwd_df["CH_max_mm"].notna().any() else None
+
+        st.session_state["outputs"] = outputs
+        st.session_state["meta"] = {
+            "MONTH_STR": MONTH_STR,
+            "das_n": das_n,
+            "end_day": end_day,
+            "YEAR": YEAR,
+            "MM": MM,
+            "rainy_thr": float(rainy_thr),
+            "heavy_thr": float(heavy_thr),
+        }
+        st.session_state["derived"] = {
+            "station_dash": station_dash,
+            "day_dash": day_dash,
+            "hi": hi,
+            "cdd_cwd_df": cdd_cwd_df,
+            "top_cdd": top_cdd,
+            "top_cwd": top_cwd,
+            "best_cdd": best_cdd,
+            "best_cwd": best_cwd,
+            "best_ch": best_ch,
+        }
+
+        st.success("Selesai diproses. Membuka tab Hasil.")
+        set_active_tab("Hasil")
+        st.rerun()
+
+# ============================================================
+# Common gate for result tabs
+# ============================================================
+def require_results():
+    if st.session_state.get("outputs") is None or st.session_state.get("meta") is None or st.session_state.get("derived") is None:
+        st.info("Belum ada hasil. Silakan proses data di tab Input.")
         st.stop()
 
-    df = pd.concat(dfs, ignore_index=True)
+# ============================================================
+# TAB: Hasil
+# ============================================================
+with tab_hasil:
+    require_results()
 
-    required_cols = ["NAME", "DATA TIMESTAMP", "RAINFALL DAY MM"]
-    missing_cols = [c for c in required_cols if c not in df.columns]
-    if missing_cols:
-        st.error(f"Kolom wajib tidak ditemukan: {missing_cols}")
-        st.stop()
+    meta = st.session_state["meta"]
+    derived = st.session_state["derived"]
 
-    df["DATA TIMESTAMP"] = pd.to_datetime(df["DATA TIMESTAMP"], errors="coerce")
-    df = df[df["DATA TIMESTAMP"].notna()].copy()
+    MONTH_STR = meta["MONTH_STR"]
+    das_n = meta["das_n"]
+    end_day = meta["end_day"]
+    rainy_thr = meta["rainy_thr"]
+    heavy_thr = meta["heavy_thr"]
 
-    df_month = df[df["DATA TIMESTAMP"].dt.strftime("%Y-%m") == MONTH_STR].copy()
-    if df_month.empty:
-        st.error(f"Tidak ada baris untuk {MONTH_STR}. Periksa pilihan bulan atau data.")
-        st.stop()
+    station_dash = derived["station_dash"]
+    day_dash = derived["day_dash"]
+    hi = derived["hi"]
+    cdd_cwd_df = derived["cdd_cwd_df"]
+    top_cdd = derived["top_cdd"]
+    top_cwd = derived["top_cwd"]
+    best_cdd = derived["best_cdd"]
+    best_cwd = derived["best_cwd"]
+    best_ch = derived["best_ch"]
 
-    df_month["TGL"] = df_month["DATA TIMESTAMP"].dt.day
-    df_month = df_month[df_month["TGL"].between(1, end_day)].copy()
-    if df_month.empty:
-        st.error(f"Tidak ada baris pada rentang tanggal 1 s.d. {end_day} untuk {MONTH_STR}.")
-        st.stop()
+    st.subheader("Parameter")
+    st.write(f"Periode: **{MONTH_STR}**")
+    st.write(f"Dasarian: **{das_n}** | Rentang tanggal: **1 s.d. {end_day}**")
+    st.write(f"Threshold hari hujan (CWD): **{rainy_thr} mm** | Threshold lebat: **{heavy_thr} mm**")
 
-    outputs = build_outputs(df_month, end_day)
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Total hujan (mm) semua stasiun", f"{hi['total_mm_all_cells']:.1f}")
+    m2.metric("Coverage numeric (%)", f"{hi['coverage_pct_numeric']:.2f}")
+    if hi["wettest_station"]:
+        m3.metric("Stasiun terbasah (akumulasi)", f"{hi['wettest_station']['station']}", f"{hi['wettest_station']['total_mm']:.1f} mm")
+    else:
+        m3.metric("Stasiun terbasah (akumulasi)", "-")
+    if hi["wettest_day"]:
+        m4.metric("Hari terbasah (akumulasi)", f"TGL {int(hi['wettest_day']['TGL'])}", f"{hi['wettest_day']['total_mm_all_stations']:.1f} mm")
+    else:
+        m4.metric("Hari terbasah (akumulasi)", "-")
 
-    st.session_state["outputs"] = outputs
-    st.session_state["meta"] = {
-        "MONTH_STR": MONTH_STR,
-        "das_n": das_n,
-        "end_day": end_day,
-        "YEAR": YEAR,
-        "MM": MM,
+    st.markdown("---")
+    st.subheader("Indeks Dasarian: CDD / CWD terpanjang + CH maksimum (dasarian ini)")
+    d1, d2, d3 = st.columns(3)
+
+    if best_cdd is not None:
+        d1.metric(
+            "CDD terpanjang (stasiun terbaik)",
+            f"{best_cdd['station']}",
+            f"{int(best_cdd['CDD_len'])} hari (TGL {best_cdd['CDD_start']}–{best_cdd['CDD_end']})"
+        )
+    else:
+        d1.metric("CDD terpanjang (stasiun terbaik)", "-")
+
+    if best_cwd is not None:
+        d2.metric(
+            "CWD terpanjang (stasiun terbaik)",
+            f"{best_cwd['station']}",
+            f"{int(best_cwd['CWD_len'])} hari (TGL {best_cwd['CWD_start']}–{best_cwd['CWD_end']})"
+        )
+    else:
+        d2.metric("CWD terpanjang (stasiun terbaik)", "-")
+
+    if best_ch is not None and pd.notna(best_ch["CH_max_mm"]):
+        d3.metric(
+            "CH maksimum (dasarian ini)",
+            f"{best_ch['station']}",
+            f"{best_ch['CH_max_mm']:.1f} mm (TGL {int(best_ch['CH_max_TGL'])})"
+        )
+    else:
+        d3.metric("CH maksimum (dasarian ini)", "-")
+
+    cL, cR = st.columns([1.1, 0.9])
+    with cL:
+        st.subheader("Total hujan harian (semua stasiun)")
+        st.line_chart(day_dash[["TGL", "total_mm_all_stations"]].set_index("TGL"))
+
+        st.subheader("Jumlah stasiun hujan per hari")
+        st.line_chart(day_dash[["TGL", "stations_rainy_ge_thr"]].set_index("TGL"))
+
+    with cR:
+        st.subheader("Top 15 stasiun berdasarkan akumulasi")
+        st.dataframe(station_dash.head(15), use_container_width=True, height=420)
+
+    st.markdown("---")
+    cc1, cc2 = st.columns(2)
+    with cc1:
+        st.subheader("Top 15 CDD terpanjang (per stasiun)")
+        st.dataframe(top_cdd[["station","CDD_len","CDD_start","CDD_end","CH_max_mm","CH_max_TGL"]], use_container_width=True, height=420)
+    with cc2:
+        st.subheader("Top 15 CWD terpanjang (per stasiun)")
+        st.dataframe(top_cwd[["station","CWD_len","CWD_start","CWD_end","CH_max_mm","CH_max_TGL"]], use_container_width=True, height=420)
+
+    with st.expander("Tabel lengkap CDD/CWD/CHmax (semua stasiun)"):
+        st.dataframe(cdd_cwd_df, use_container_width=True, height=520)
+
+# ============================================================
+# TAB: QC
+# ============================================================
+with tab_qc:
+    require_results()
+
+    outputs = st.session_state["outputs"]
+    meta = st.session_state["meta"]
+
+    MONTH_STR = meta["MONTH_STR"]
+    das_n = meta["das_n"]
+    end_day = meta["end_day"]
+
+    wide_bmkg_out = outputs["wide_bmkg_out"]
+    qc_unmapped = outputs["qc_unmapped"]
+    qc_gap = outputs["qc_gap"]
+    qc_empty_last_day = outputs["qc_empty_last_day"]
+
+    st.subheader("Parameter")
+    st.write(f"Periode: **{MONTH_STR}**")
+    st.write(f"Dasarian: **{das_n}** | Rentang tanggal: **1 s.d. {end_day}**")
+    st.write(f"Total stasiun: **{len(HORIZONTAL_COLS)}**")
+
+    st.subheader("Ringkasan QC (kelengkapan record berbasis FORMAT BMKG)")
+    total_cells_bmkg = end_day * len(HORIZONTAL_COLS)
+    cells_with_row = int((wide_bmkg_out.drop(columns=["TGL"]) != "x").to_numpy().sum())
+    coverage_pct = round(cells_with_row / total_cells_bmkg * 100, 2)
+
+    q1, q2, q3 = st.columns(3)
+    q1.metric("Coverage record (%)", f"{coverage_pct}%")
+    q2.metric("Cells with record", f"{cells_with_row}/{total_cells_bmkg}")
+    q3.metric("Stations", f"{len(HORIZONTAL_COLS)}")
+
+    st.markdown("---")
+    with st.expander("Stasiun kosong total pada jendela dasarian"):
+        empty_all_stations = qc_gap[qc_gap["has_any_record_1_to_end_das"] == 0]["station"].tolist()
+        if empty_all_stations:
+            st.dataframe(pd.DataFrame({"station": empty_all_stations}), use_container_width=True)
+        else:
+            st.write("Tidak ada")
+
+    with st.expander(f"Stasiun kosong pada hari terakhir (TGL={end_day})"):
+        if qc_empty_last_day.empty:
+            st.write("Tidak ada")
+        else:
+            st.dataframe(qc_empty_last_day, use_container_width=True)
+
+    if not qc_unmapped.empty:
+        with st.expander("Nama hasil mapping yang tidak ada di header horizontal"):
+            st.dataframe(qc_unmapped, use_container_width=True)
+
+# ============================================================
+# TAB: Tabel
+# ============================================================
+with tab_tabel:
+    require_results()
+
+    outputs = st.session_state["outputs"]
+    meta = st.session_state["meta"]
+
+    wide_bmkg_out = outputs["wide_bmkg_out"]
+    wide_num_out = outputs["wide_num_out"]
+
+    st.subheader("Tabel Output")
+    view_choice = st.radio(
+        "Pilih tampilan",
+        options=["FORMAT BMKG (x / - / 0 / angka)", "NUMERIC (NaN / 0.1 / angka)"],
+        index=0,
+        horizontal=True,
+        key="view_choice"
+    )
+
+    if view_choice.startswith("FORMAT BMKG"):
+        st.dataframe(wide_bmkg_out, use_container_width=True, height=620)
+    else:
+        st.dataframe(wide_num_out, use_container_width=True, height=620)
+
+# ============================================================
+# TAB: Download
+# ============================================================
+with tab_download:
+    require_results()
+
+    outputs = st.session_state["outputs"]
+    meta = st.session_state["meta"]
+    derived = st.session_state["derived"]
+
+    MONTH_STR = meta["MONTH_STR"]
+    das_n = meta["das_n"]
+
+    wide_bmkg_out = outputs["wide_bmkg_out"]
+    wide_num_out = outputs["wide_num_out"]
+    qc_station = outputs["qc_station"]
+    qc_day = outputs["qc_day"]
+    qc_unmapped = outputs["qc_unmapped"]
+    qc_gap = outputs["qc_gap"]
+    qc_empty_last_day = outputs["qc_empty_last_day"]
+
+    station_dash = derived["station_dash"]
+    day_dash = derived["day_dash"]
+    cdd_cwd_df = derived["cdd_cwd_df"]
+
+    summary_station_name = f"SUMMARY_station_rain_{MONTH_STR}_das{das_n}.csv"
+    summary_day_name = f"SUMMARY_day_rain_{MONTH_STR}_das{das_n}.csv"
+    summary_cdd_cwd_name = f"SUMMARY_CDD_CWD_CHmax_{MONTH_STR}_das{das_n}.csv"
+
+    st.subheader("Download")
+
+    download_choice = st.selectbox(
+        "Pilih file yang ingin di-download",
+        [
+            f"rain_horizontal_{MONTH_STR}_das{das_n}_format_bmkg.csv",
+            f"rain_horizontal_{MONTH_STR}_das{das_n}_numeric.csv",
+            f"QC_station_completeness_{MONTH_STR}_das{das_n}.csv",
+            f"QC_day_completeness_{MONTH_STR}_das{das_n}.csv",
+            f"QC_unmapped_names_{MONTH_STR}_das{das_n}.csv",
+            f"QC_station_empty_gap_{MONTH_STR}_das{das_n}.csv",
+            f"QC_empty_last_day_{MONTH_STR}_das{das_n}.csv",
+            summary_station_name,
+            summary_day_name,
+            summary_cdd_cwd_name,
+        ],
+        index=0
+    )
+
+    download_map = {
+        f"rain_horizontal_{MONTH_STR}_das{das_n}_format_bmkg.csv": wide_bmkg_out,
+        f"rain_horizontal_{MONTH_STR}_das{das_n}_numeric.csv": wide_num_out,
+        f"QC_station_completeness_{MONTH_STR}_das{das_n}.csv": qc_station,
+        f"QC_day_completeness_{MONTH_STR}_das{das_n}.csv": qc_day,
+        f"QC_unmapped_names_{MONTH_STR}_das{das_n}.csv": qc_unmapped,
+        f"QC_station_empty_gap_{MONTH_STR}_das{das_n}.csv": qc_gap,
+        f"QC_empty_last_day_{MONTH_STR}_das{das_n}.csv": qc_empty_last_day,
+        summary_station_name: station_dash,
+        summary_day_name: day_dash,
+        summary_cdd_cwd_name: cdd_cwd_df,
     }
 
-if st.session_state["outputs"] is None:
-    st.warning("Klik Run transpose + QC untuk memproses data.")
-    st.stop()
-
-# ============================================================
-# Use stored outputs
-# ============================================================
-outputs = st.session_state["outputs"]
-meta = st.session_state["meta"]
-
-MONTH_STR = meta["MONTH_STR"]
-das_n = meta["das_n"]
-end_day = meta["end_day"]
-
-wide_bmkg_out = outputs["wide_bmkg_out"]
-wide_num_out = outputs["wide_num_out"]
-qc_station = outputs["qc_station"]
-qc_day = outputs["qc_day"]
-qc_unmapped = outputs["qc_unmapped"]
-qc_gap = outputs["qc_gap"]
-qc_empty_last_day = outputs["qc_empty_last_day"]
-
-# ============================================================
-# Dashboard summaries
-# ============================================================
-station_dash, day_dash, hi = build_dashboard(wide_num_out, rainy_thr, heavy_thr)
-cdd_cwd_df = compute_cdd_cwd(wide_num_out, wet_threshold=rainy_thr)
-
-top_cdd = cdd_cwd_df.sort_values(["CDD_len", "station"], ascending=[False, True]).head(15)
-top_cwd = cdd_cwd_df.sort_values(["CWD_len", "station"], ascending=[False, True]).head(15)
-
-# Global bests
-best_cdd = cdd_cwd_df.loc[cdd_cwd_df["CDD_len"].idxmax()] if len(cdd_cwd_df) else None
-best_cwd = cdd_cwd_df.loc[cdd_cwd_df["CWD_len"].idxmax()] if len(cdd_cwd_df) else None
-best_ch = cdd_cwd_df.loc[cdd_cwd_df["CH_max_mm"].idxmax()] if cdd_cwd_df["CH_max_mm"].notna().any() else None
-
-# ============================================================
-# Dashboard section
-# ============================================================
-st.header("Dashboard Ringkasan")
-
-m1, m2, m3, m4 = st.columns(4)
-m1.metric("Total hujan (mm) semua stasiun", f"{hi['total_mm_all_cells']:.1f}")
-m2.metric("Coverage numeric (%)", f"{hi['coverage_pct_numeric']:.2f}")
-if hi["wettest_station"]:
-    m3.metric("Stasiun terbasah (akumulasi)", f"{hi['wettest_station']['station']}", f"{hi['wettest_station']['total_mm']:.1f} mm")
-else:
-    m3.metric("Stasiun terbasah (akumulasi)", "-")
-if hi["wettest_day"]:
-    m4.metric("Hari terbasah (akumulasi)", f"TGL {int(hi['wettest_day']['TGL'])}", f"{hi['wettest_day']['total_mm_all_stations']:.1f} mm")
-else:
-    m4.metric("Hari terbasah (akumulasi)", "-")
-
-st.subheader("Indeks Dasarian: CDD / CWD terpanjang + CH maksimum (dasarian ini)")
-d1, d2, d3 = st.columns(3)
-
-if best_cdd is not None:
-    d1.metric(
-        "CDD terpanjang (stasiun terbaik)",
-        f"{best_cdd['station']}",
-        f"{int(best_cdd['CDD_len'])} hari (TGL {best_cdd['CDD_start']}–{best_cdd['CDD_end']})"
+    df_dl = download_map[download_choice]
+    st.download_button(
+        label=f"Download: {download_choice}",
+        data=to_csv_bytes(df_dl),
+        file_name=download_choice,
+        mime="text/csv",
+        use_container_width=True
     )
-else:
-    d1.metric("CDD terpanjang (stasiun terbaik)", "-")
-
-if best_cwd is not None:
-    d2.metric(
-        "CWD terpanjang (stasiun terbaik)",
-        f"{best_cwd['station']}",
-        f"{int(best_cwd['CWD_len'])} hari (TGL {best_cwd['CWD_start']}–{best_cwd['CWD_end']})"
-    )
-else:
-    d2.metric("CWD terpanjang (stasiun terbaik)", "-")
-
-if best_ch is not None and pd.notna(best_ch["CH_max_mm"]):
-    d3.metric(
-        "CH maksimum (dasarian ini)",
-        f"{best_ch['station']}",
-        f"{best_ch['CH_max_mm']:.1f} mm (TGL {int(best_ch['CH_max_TGL'])})"
-    )
-else:
-    d3.metric("CH maksimum (dasarian ini)", "-")
-
-cL, cR = st.columns([1.1, 0.9])
-
-with cL:
-    st.subheader("Total hujan harian (semua stasiun)")
-    chart_df = day_dash[["TGL", "total_mm_all_stations"]].set_index("TGL")
-    st.line_chart(chart_df)
-
-    st.subheader("Jumlah stasiun hujan per hari")
-    chart2_df = day_dash[["TGL", "stations_rainy_ge_thr"]].set_index("TGL")
-    st.line_chart(chart2_df)
-
-with cR:
-    st.subheader("Top 15 stasiun berdasarkan akumulasi")
-    st.dataframe(station_dash.head(15), use_container_width=True)
-
-    st.subheader("Top 10 stasiun hari hujan")
-    top_rainy = station_dash.sort_values(["rainy_days_ge_thr", "station"], ascending=[False, True]).head(10)
-    st.dataframe(top_rainy[["station", "rainy_days_ge_thr", "total_mm", "max_mm", "tgl_max"]], use_container_width=True)
-
-st.subheader("Top 15 CDD dan CWD terpanjang")
-cc1, cc2 = st.columns(2)
-with cc1:
-    st.markdown("**Top 15 CDD terpanjang (per stasiun)**")
-    st.dataframe(top_cdd[["station","CDD_len","CDD_start","CDD_end","CH_max_mm","CH_max_TGL"]], use_container_width=True)
-with cc2:
-    st.markdown("**Top 15 CWD terpanjang (per stasiun)**")
-    st.dataframe(top_cwd[["station","CWD_len","CWD_start","CWD_end","CH_max_mm","CH_max_TGL"]], use_container_width=True)
-
-st.divider()
-
-# ============================================================
-# QC section
-# ============================================================
-st.header("QC")
-
-st.subheader("Parameter")
-st.write(f"Periode: **{MONTH_STR}**")
-st.write(f"Dasarian: **{das_n}** | Rentang tanggal: **1 s.d. {end_day}**")
-st.write(f"Total stasiun (kolom output): **{len(HORIZONTAL_COLS)}**")
-
-st.subheader("Ringkasan QC (kelengkapan record, berbasis FORMAT BMKG)")
-total_cells_bmkg = end_day * len(HORIZONTAL_COLS)
-cells_with_row = int((wide_bmkg_out.drop(columns=["TGL"]) != "x").to_numpy().sum())
-coverage_pct = round(cells_with_row / total_cells_bmkg * 100, 2)
-
-q1, q2, q3 = st.columns(3)
-q1.metric("Coverage record (%)", f"{coverage_pct}%")
-q2.metric("Cells with record", f"{cells_with_row}/{total_cells_bmkg}")
-q3.metric("Stations", f"{len(HORIZONTAL_COLS)}")
-
-with st.expander("Stasiun kosong total pada jendela dasarian"):
-    empty_all_stations = qc_gap[qc_gap["has_any_record_1_to_end_das"] == 0]["station"].tolist()
-    if empty_all_stations:
-        st.dataframe(pd.DataFrame({"station": empty_all_stations}), use_container_width=True)
-    else:
-        st.write("Tidak ada")
-
-with st.expander(f"Stasiun kosong pada hari terakhir (TGL={end_day})"):
-    if qc_empty_last_day.empty:
-        st.write("Tidak ada")
-    else:
-        st.dataframe(qc_empty_last_day, use_container_width=True)
-
-if not qc_unmapped.empty:
-    with st.expander("Nama hasil mapping yang tidak ada di header horizontal"):
-        st.dataframe(qc_unmapped, use_container_width=True)
-
-st.divider()
-
-# ============================================================
-# Tables
-# ============================================================
-st.header("Tabel Output")
-
-view_choice = st.radio(
-    "Pilih tampilan",
-    options=["FORMAT BMKG (x / - / 0 / angka)", "NUMERIC (NaN / 0.1 / angka)"],
-    index=0,
-    horizontal=True
-)
-
-if view_choice.startswith("FORMAT BMKG"):
-    st.dataframe(wide_bmkg_out, use_container_width=True, height=420)
-else:
-    st.dataframe(wide_num_out, use_container_width=True, height=420)
-
-st.divider()
-
-# ============================================================
-# Downloads
-# ============================================================
-st.header("Download")
-
-summary_station_name = f"SUMMARY_station_rain_{MONTH_STR}_das{das_n}.csv"
-summary_day_name = f"SUMMARY_day_rain_{MONTH_STR}_das{das_n}.csv"
-summary_cdd_cwd_name = f"SUMMARY_CDD_CWD_CHmax_{MONTH_STR}_das{das_n}.csv"
-
-download_choice = st.selectbox(
-    "Pilih file yang ingin di-download",
-    [
-        f"rain_horizontal_{MONTH_STR}_das{das_n}_format_bmkg.csv",
-        f"rain_horizontal_{MONTH_STR}_das{das_n}_numeric.csv",
-        f"QC_station_completeness_{MONTH_STR}_das{das_n}.csv",
-        f"QC_day_completeness_{MONTH_STR}_das{das_n}.csv",
-        f"QC_unmapped_names_{MONTH_STR}_das{das_n}.csv",
-        f"QC_station_empty_gap_{MONTH_STR}_das{das_n}.csv",
-        f"QC_empty_last_day_{MONTH_STR}_das{das_n}.csv",
-        summary_station_name,
-        summary_day_name,
-        summary_cdd_cwd_name,
-    ],
-    index=0
-)
-
-download_map = {
-    f"rain_horizontal_{MONTH_STR}_das{das_n}_format_bmkg.csv": wide_bmkg_out,
-    f"rain_horizontal_{MONTH_STR}_das{das_n}_numeric.csv": wide_num_out,
-    f"QC_station_completeness_{MONTH_STR}_das{das_n}.csv": qc_station,
-    f"QC_day_completeness_{MONTH_STR}_das{das_n}.csv": qc_day,
-    f"QC_unmapped_names_{MONTH_STR}_das{das_n}.csv": qc_unmapped,
-    f"QC_station_empty_gap_{MONTH_STR}_das{das_n}.csv": qc_gap,
-    f"QC_empty_last_day_{MONTH_STR}_das{das_n}.csv": qc_empty_last_day,
-    summary_station_name: station_dash,
-    summary_day_name: day_dash,
-    summary_cdd_cwd_name: cdd_cwd_df,
-}
-
-df_dl = download_map[download_choice]
-st.download_button(
-    label=f"Download: {download_choice}",
-    data=to_csv_bytes(df_dl),
-    file_name=download_choice,
-    mime="text/csv",
-    use_container_width=True
-)
-
-
-
