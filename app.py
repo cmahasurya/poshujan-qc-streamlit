@@ -21,7 +21,8 @@ st.caption(
 # ============================================================
 # Navigation (single-file multi-view; controllable like tabs)
 # ============================================================
-PAGES = ["Input", "Hasil", "QC", "Tabel", "Peta", "Download"]
+PAGES = ["Input", "Hasil", "QC", "Tabel", "Grafik", "Peta", "Download"]
+
 
 if "page" not in st.session_state:
     st.session_state["page"] = "Input"
@@ -295,12 +296,23 @@ def compute_cdd_cwd(wide_num_out: pd.DataFrame, wet_threshold: float = 0.1):
     num = wide_num_out.drop(columns=["TGL"]).apply(pd.to_numeric, errors="coerce")
     num.index = wide_num_out["TGL"].values
 
+    last_day = int(wide_num_out["TGL"].max())
+
     rows = []
     for station in num.columns:
         s = num[station]
 
+        # longest
         cdd_len, cdd_start, cdd_end = longest_run(s, lambda x: float(x) == 0.0)
         cwd_len, cwd_start, cwd_end = longest_run(s, lambda x: float(x) >= float(wet_threshold))
+
+        # current (ending at last_day)
+        cdd_cur_len, cdd_cur_start, cdd_cur_end = current_run_ending_at_last(
+            s, lambda x: float(x) == 0.0, last_day
+        )
+        cwd_cur_len, cwd_cur_start, cwd_cur_end = current_run_ending_at_last(
+            s, lambda x: float(x) >= float(wet_threshold), last_day
+        )
 
         if np.isfinite(s.to_numpy()).any():
             ch_max = float(np.nanmax(s.to_numpy()))
@@ -311,12 +323,24 @@ def compute_cdd_cwd(wide_num_out: pd.DataFrame, wet_threshold: float = 0.1):
 
         rows.append({
             "station": station,
+
             "CDD_len": cdd_len,
             "CDD_start": cdd_start,
             "CDD_end": cdd_end,
+
             "CWD_len": cwd_len,
             "CWD_start": cwd_start,
             "CWD_end": cwd_end,
+
+            # NEW: current condition at last day
+            "CDD_cur_len": cdd_cur_len,
+            "CDD_cur_start": cdd_cur_start,
+            "CDD_cur_end": cdd_cur_end,
+
+            "CWD_cur_len": cwd_cur_len,
+            "CWD_cur_start": cwd_cur_start,
+            "CWD_cur_end": cwd_cur_end,
+
             "CH_max_mm": ch_max,
             "CH_max_TGL": ch_tgl,
         })
@@ -483,6 +507,34 @@ def build_dashboard(wide_num_out: pd.DataFrame, rainy_threshold: float, heavy_th
         "wettest_day": wettest_day
     }
 
+def current_run_ending_at_last(series: pd.Series, condition_func, last_day: int):
+    """
+    Hitung panjang run yang sedang berlangsung dan HARUS berakhir di last_day.
+    - series: indexed by day number (int)
+    - NaN memutus run
+    Return: (len_run, start_day, end_day) or (0, None, None)
+    """
+    if last_day not in series.index:
+        return 0, None, None
+
+    v_last = series.loc[last_day]
+    if pd.isna(v_last) or (not condition_func(v_last)):
+        return 0, None, None
+
+    cur_len = 0
+    cur_start = last_day
+    d = last_day
+    while d in series.index:
+        v = series.loc[d]
+        if pd.isna(v) or (not condition_func(v)):
+            break
+        cur_len += 1
+        cur_start = d
+        d -= 1
+
+    return int(cur_len), int(cur_start), int(last_day)
+
+
 # ============================================================
 # Session state init
 # ============================================================
@@ -567,7 +619,8 @@ background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
 # ============================================================
 # Top navigation bar
 # ============================================================
-nav_cols = st.columns([1, 1, 1, 1, 1, 1, 2])
+nav_cols = st.columns([1, 1, 1, 1, 1, 1, 1, 2])
+
 with nav_cols[0]:
     if st.button("Input", use_container_width=True):
         goto("Input"); st.rerun()
@@ -581,12 +634,15 @@ with nav_cols[3]:
     if st.button("Tabel", use_container_width=True):
         goto("Tabel"); st.rerun()
 with nav_cols[4]:
+    if st.button("Grafik", use_container_width=True):
+        goto("Grafik"); st.rerun()
+with nav_cols[5]:
     if st.button("Peta", use_container_width=True):
         goto("Peta"); st.rerun()
-with nav_cols[5]:
+with nav_cols[6]:
     if st.button("Download", use_container_width=True):
         goto("Download"); st.rerun()
-with nav_cols[6]:
+with nav_cols[7]:
     st.write(f"**Halaman aktif:** {st.session_state['page']}")
 
 st.divider()
@@ -833,6 +889,25 @@ elif st.session_state["page"] == "Hasil":
     with st.expander("Tabel lengkap CDD/CWD/CHmax (semua stasiun)"):
         st.dataframe(cdd_cwd_df, use_container_width=True, height=520)
 
+    st.markdown("---")
+    st.subheader("Kondisi terkini (run yang sedang berlangsung di hari terakhir window)")
+    
+    last_day = end_day  # same for your window
+    tmp_cur = cdd_cwd_df.copy()
+    
+    # show only stations where current run exists
+    tmp_cdd_cur = tmp_cur[tmp_cur["CDD_cur_len"] > 0].sort_values(["CDD_cur_len","station"], ascending=[False, True]).head(15)
+    tmp_cwd_cur = tmp_cur[tmp_cur["CWD_cur_len"] > 0].sort_values(["CWD_cur_len","station"], ascending=[False, True]).head(15)
+    
+    x1, x2 = st.columns(2)
+    with x1:
+        st.caption(f"Top 15 CDD current (ending TGL {last_day})")
+        st.dataframe(tmp_cdd_cur[["station","CDD_cur_len","CDD_cur_start","CDD_cur_end"]], use_container_width=True, height=420)
+    with x2:
+        st.caption(f"Top 15 CWD current (ending TGL {last_day})")
+        st.dataframe(tmp_cwd_cur[["station","CWD_cur_len","CWD_cur_start","CWD_cur_end"]], use_container_width=True, height=420)
+
+
 # ============================================================
 # PAGE: QC
 # ============================================================
@@ -912,6 +987,54 @@ elif st.session_state["page"] == "Tabel":
         st.dataframe(wide_num_out, use_container_width=True, height=720)
 
 # ============================================================
+# PAGE: Grafik
+# ============================================================
+elif st.session_state["page"] == "Grafik":
+    require_results()
+
+    outputs = st.session_state["outputs"]
+    meta = st.session_state["meta"]
+
+    wide_num_out = outputs["wide_num_out"].copy()
+
+    st.subheader("Grafik curah hujan harian per pos (pilih satu atau banyak)")
+
+    # station selector
+    selected = st.multiselect(
+        "Pilih Pos Hujan",
+        options=HORIZONTAL_COLS,
+        default=["Sembalun"] if "Sembalun" in HORIZONTAL_COLS else [],
+        help="Bisa pilih lebih dari satu untuk dibandingkan"
+    )
+
+    if not selected:
+        st.info("Pilih minimal 1 pos hujan.")
+        st.stop()
+
+    # prepare long format
+    dfp = wide_num_out[["TGL"] + selected].copy()
+    dfp_long = dfp.melt(id_vars=["TGL"], var_name="station", value_name="rain_mm")
+    dfp_long["rain_mm"] = pd.to_numeric(dfp_long["rain_mm"], errors="coerce")
+
+    # optional: display last day conditions for selected stations
+    cdd_cwd_df = st.session_state["derived"]["cdd_cwd_df"].copy()
+    cur_sel = cdd_cwd_df[cdd_cwd_df["station"].isin(selected)][
+        ["station","CDD_cur_len","CDD_cur_start","CWD_cur_len","CWD_cur_start"]
+    ].copy()
+
+    st.markdown("### Kondisi terkini di hari terakhir window")
+    st.dataframe(cur_sel.sort_values("station"), use_container_width=True, height=240)
+
+    st.markdown("### Time series")
+    # Streamlit can plot multi-line if you pivot to wide with TGL index
+    chart_df = dfp.set_index("TGL")
+    st.line_chart(chart_df)
+
+    st.markdown("### Tabel nilai")
+    st.dataframe(dfp, use_container_width=True, height=520)
+
+
+# ============================================================
 # PAGE: Peta
 # ============================================================
 elif st.session_state["page"] == "Peta":
@@ -928,7 +1051,13 @@ elif st.session_state["page"] == "Peta":
 
         qc_station = outputs["qc_station"][["station", "completeness_pct"]].copy()
         station_dash = derived["station_dash"][["station", "total_mm", "max_mm", "tgl_max"]].copy()
-        cdd_cwd_df = derived["cdd_cwd_df"][["station", "CDD_len", "CWD_len", "CH_max_mm", "CH_max_TGL"]].copy()
+        cdd_cwd_df = derived["cdd_cwd_df"][[
+            "station",
+            "CDD_len", "CWD_len",
+            "CDD_cur_len", "CWD_cur_len",
+            "CH_max_mm", "CH_max_TGL"
+        ]].copy()
+
 
         map_df = (
             coords_final.merge(qc_station, on="station", how="left")
@@ -976,9 +1105,10 @@ elif st.session_state["page"] == "Peta":
             "Akumulasi dasarian (total_mm)",
             "CDD terpanjang (CDD_len)",
             "CWD terpanjang (CWD_len)",
+            "CDD terkini (CDD_cur_len)",
+            "CWD terkini (CWD_cur_len)",
             "CH maksimum (CH_max_mm)"
         ],
-        index=0
     )
 
     left, right = st.columns([4.2, 1.3])
@@ -1092,6 +1222,13 @@ background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
     elif layer == "CH maksimum (CH_max_mm)":
         metric_col = "CH_max_mm"
         metric_label = "CH max (mm)"
+    elif layer == "CDD terkini (CDD_cur_len)":
+        metric_col = "CDD_cur_len"
+        metric_label = "CDD current (hari)"
+    elif layer == "CWD terkini (CWD_cur_len)":
+        metric_col = "CWD_cur_len"
+        metric_label = "CWD current (hari)"
+
 
     # -----------------------------
     # Prepare colors for Scatter
@@ -1284,5 +1421,6 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
