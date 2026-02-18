@@ -1494,7 +1494,7 @@ elif st.session_state["page"] == "Download":
     wide_num_out = outputs["wide_num_out"]
     qc_station = outputs["qc_station"]
     qc_day = outputs["qc_day"]
-    qc_unmapped = outputs["qc_unmapped"]
+    qc_unmapped = outputs.get("qc_unmapped", outputs.get("qc_mapped_not_in_header", pd.DataFrame()))
     qc_gap = outputs["qc_gap"]
     qc_empty_last_day = outputs["qc_empty_last_day"]
 
@@ -1551,6 +1551,7 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
 
