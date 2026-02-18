@@ -38,96 +38,138 @@ def to_csv_bytes(df: pd.DataFrame) -> bytes:
 # ============================================================
 # Panduan (collapsible, default closed)
 # ============================================================
-with st.expander("Panduan dan syarat file (klik untuk buka)", expanded=False):
-    st.markdown(
-        """
-## Transposer Pos Hujan (Vertikal → Horizontal) + QC Dasarian + Peta
+with st.expander("Panduan penggunaan SEGARA (klik untuk buka)", expanded=False):
+    st.markdown("""
+## SEGARA : Sistem Ekspor & Generator Analisis Dasarian
 
-Aplikasi ini digunakan untuk mengubah data curah hujan harian format **vertikal** (baris per stasiun per tanggal)
-menjadi format **horizontal** (1 baris per tanggal, kolom per stasiun) dengan urutan kolom **harus persis** mengikuti header yang sudah ditetapkan.
+SEGARA digunakan untuk **standarisasi, kontrol kualitas, analisis, dan ekspor** data curah hujan dasarian secara otomatis dalam satu platform operasional.
 
-### Input Curah Hujan
-File CSV vertikal yang minimal memiliki kolom:
+Aplikasi ini mengubah data curah hujan harian format **vertikal**  
+(baris per stasiun per tanggal) menjadi format **horizontal**  
+(1 baris per tanggal, kolom per stasiun) dengan urutan kolom **tetap dan baku BMKG**.
+
+---
+
+### 📥 Input Data Curah Hujan
+
+File CSV vertikal minimal memiliki kolom:
+
 - `NAME`
 - `DATA TIMESTAMP`
 - `RAINFALL DAY MM`
 
-### Koordinat untuk Tab Peta (dibaca dari repo)
+---
+
+### 🗺️ Koordinat untuk Tab Peta
+
 Aplikasi otomatis membaca **coords.csv** dari root repo dengan kolom:
-- `POS HUJAN ID`
-- `NAME`
-- `CURRENT LATITUDE`
-- `CURRENT LONGITUDE`
-- `CURRENT ELEVATION M`
 
-Koordinat akan dinormalisasi mengikuti `NAME_MAP`, lalu dipetakan ke daftar resmi `HORIZONTAL_COLS`.
-Aplikasi juga melakukan QC koordinat:
-- `OK` (koordinat ada dan masuk batas NTB)
-- `MISSING_COORD` (lat lon kosong)
-- `OUT_OF_BOUNDS` (di luar batas NTB sederhana)
-- `DUP_LATLON` (duplikat lat lon)
+- POS HUJAN ID  
+- NAME  
+- CURRENT LATITUDE  
+- CURRENT LONGITUDE  
+- CURRENT ELEVATION M  
 
-### Pilihan di aplikasi
-- **Year**: Tahun data (misal 2026)
-- **Month**: Bulan data (01–12)
-- **Dasarian**:
-  - **Das 1**: tanggal 1–10
-  - **Das 2**: tanggal 1–20
-  - **Das 3**: satu bulan penuh
-- **Threshold hari hujan**: dipakai untuk
-  - hitung **CWD** (hari basah berurutan)
-  - hitung jumlah **hari hujan** pada ringkasan
-  Default yang disarankan: **1.0 mm** (bisa diubah sesuai kebutuhan operasional).
-- **Threshold hujan lebat**: dipakai untuk menghitung jumlah hari hujan lebat.
+Digunakan untuk visualisasi QC dan analisis spasial.
 
-### Aturan nilai (FORMAT BMKG)
-- `raw = 0` → tampil `-` (tidak hujan teramati)
-- `raw = 8888` → tampil `0` (hujan sangat kecil/trace)
-- `raw = 9999` → tampil `x` (tidak ada data/alat bermasalah)
-- `raw kosong/NaN` → tampil `x`
-- **Tidak ada baris** untuk stasiun pada tanggal tersebut → tampil `x`
+---
 
-### Aturan nilai (NUMERIC untuk perhitungan)
-- `raw = 0` → `0.0`
-- `raw = 8888` → `0.1` (trace dianggap 0.1 mm)
-- `raw = 9999` → `NaN`
-- `raw kosong/NaN` → `NaN`
-- **Tidak ada baris** → `NaN`
+### ⚙️ Pengaturan Periode Analisis
 
-### Output utama
+- **Year** → Tahun data  
+- **Month** → Bulan data (01–12)  
+- **Dasarian**  
+  - **Das 1** → tanggal 1–10  
+  - **Das 2** → tanggal 1–20  
+  - **Das 3** → 1 bulan penuh  
+
+---
+
+### 🌧️ Aturan Nilai – FORMAT BMKG (tampilan)
+
+- raw = 0 → `-` (tidak hujan teramati)  
+- raw = 8888 → `0` (hujan sangat kecil / trace)  
+- raw = 9999 → `x` (tidak ada data / alat bermasalah)  
+- raw kosong / NaN → `x`  
+- Tidak ada baris data → `x`
+
+---
+
+### 🔢 Aturan Nilai – NUMERIC (perhitungan)
+
+- raw = 0 → 0.0  
+- raw = 8888 → 0.1 mm  
+- raw = 9999 → NaN  
+- raw kosong / NaN → NaN  
+- Tidak ada baris data → NaN  
+
+---
+
+### 📊 Output Utama SEGARA
+
+#### Standarisasi & QC
 - Tabel **FORMAT BMKG**
 - Tabel **NUMERIC**
-- QC kelengkapan:
-  - per stasiun (completeness)
-  - per tanggal (jumlah pos yang ada record)
-  - stasiun kosong total pada window
-  - stasiun kosong pada hari terakhir window
-  - nama hasil mapping yang tidak ada di header resmi (indikasi masalah penamaan)
-- Ringkasan dasarian:
-  - total akumulasi semua pos
-  - coverage numeric
-  - hari terbasah (akumulasi semua pos) dan pos terbasah (akumulasi dasarian)
-- Fokus indeks dasarian dan kondisi terkini:
-  - **CDD current** dan **CWD current** (run yang sedang berlangsung dan harus berakhir di hari terakhir window)
-  - **Akumulasi CH tertinggi** (pos terbasah) dan **akumulasi CH terendah** (pos terkering)
-  - **CH minimum (ada hujan)**: minimum akumulasi dasarian dengan syarat total > 0
-  - **CH maksimum harian** (nilai harian maksimum dalam window) beserta tanggalnya
-  - Safeguard: jika nilai sama, semua pos yang tie akan ditampilkan (dipotong bila terlalu panjang)
-- Peta titik (lat lon) untuk visual:
-  - QC koordinat
-  - completeness
-  - akumulasi dasarian
-  - CDD/CWD (terpanjang dan current)
-  - CH max
+- QC kelengkapan per stasiun
+- QC kelengkapan per tanggal
+- QC unmapped names (indikasi masalah penamaan)
+- QC stasiun kosong total
+- QC stasiun kosong pada hari terakhir
 
-### Tutorial singkat
-1. Upload CSV vertikal (boleh lebih dari 1 file).
-2. Pilih **Year**, **Month**, **Dasarian**.
-3. Atur threshold (default hari hujan **1.0 mm** bila diperlukan).
+#### Analisis Dasarian
+- Akumulasi curah hujan per pos
+- Pos terbasah & terkering
+- **CDD & CWD current**
+- **CDD & CWD terpanjang**
+- **CH maksimum harian**
+- Coverage data
+
+#### Visualisasi Spasial
+- Peta akumulasi hujan
+- Peta kelengkapan data
+- Peta CDD & CWD
+- Peta CH maksimum
+
+#### Ekspor Data
+- Semua tabel dan ringkasan dapat diunduh dalam format CSV.
+
+---
+
+### ▶️ Alur Penggunaan
+
+1. Upload CSV vertikal (boleh lebih dari satu file).
+2. Pilih **Year**, **Month**, dan **Dasarian**.
+3. Atur threshold bila diperlukan.
 4. Klik **Run**.
-5. Gunakan menu “Input / Hasil / QC / Tabel / Grafik / Peta / Download” untuk berpindah tampilan tanpa scroll.
-"""
-    )
+5. Gunakan menu:
+   **Input / Hasil / QC / Tabel / Grafik / Peta / Download**
+   untuk berpindah tampilan tanpa scroll.
+
+---
+
+### 🏢 Implementasi Operasional
+
+SEGARA digunakan sebagai sistem pendukung pengolahan dan analisis data curah hujan dasarian di:
+
+**Stasiun Klimatologi Nusa Tenggara Barat**
+
+untuk meningkatkan:
+- konsistensi format data  
+- kecepatan analisis  
+- kualitas kontrol data  
+- kemudahan diseminasi informasi  
+
+---
+
+### 👤 Pengembang Sistem
+
+**Cakra Mahasurya Atmojo Pamungkas**  
+Stasiun Klimatologi Nusa Tenggara Barat  
+Badan Meteorologi, Klimatologi, dan Geofisika (BMKG)
+
+---
+""")
+
 
 # ============================================================
 # HARD CODE: HORIZONTAL_COLS + NAME_MAP
@@ -1989,6 +2031,7 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
 
