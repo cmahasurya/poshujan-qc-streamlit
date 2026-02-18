@@ -53,12 +53,19 @@ File CSV vertikal yang minimal memiliki kolom:
 - `RAINFALL DAY MM`
 
 ### Koordinat untuk Tab Peta (dibaca dari repo)
-Aplikasi otomatis membaca **coords.csv** dari root repo (Opsi A) dengan kolom:
+Aplikasi otomatis membaca **coords.csv** dari root repo dengan kolom:
 - `POS HUJAN ID`
 - `NAME`
 - `CURRENT LATITUDE`
 - `CURRENT LONGITUDE`
 - `CURRENT ELEVATION M`
+
+Koordinat akan dinormalisasi mengikuti `NAME_MAP`, lalu dipetakan ke daftar resmi `HORIZONTAL_COLS`.
+Aplikasi juga melakukan QC koordinat:
+- `OK` (koordinat ada dan masuk batas NTB)
+- `MISSING_COORD` (lat lon kosong)
+- `OUT_OF_BOUNDS` (di luar batas NTB sederhana)
+- `DUP_LATLON` (duplikat lat lon)
 
 ### Pilihan di aplikasi
 - **Year**: Tahun data (misal 2026)
@@ -67,6 +74,11 @@ Aplikasi otomatis membaca **coords.csv** dari root repo (Opsi A) dengan kolom:
   - **Das 1**: tanggal 1–10
   - **Das 2**: tanggal 1–20
   - **Das 3**: satu bulan penuh
+- **Threshold hari hujan**: dipakai untuk
+  - hitung **CWD** (hari basah berurutan)
+  - hitung jumlah **hari hujan** pada ringkasan
+  Default yang disarankan: **1.0 mm** (bisa diubah sesuai kebutuhan operasional).
+- **Threshold hujan lebat**: dipakai untuk menghitung jumlah hari hujan lebat.
 
 ### Aturan nilai (FORMAT BMKG)
 - `raw = 0` → tampil `-` (tidak hujan teramati)
@@ -85,19 +97,35 @@ Aplikasi otomatis membaca **coords.csv** dari root repo (Opsi A) dengan kolom:
 ### Output utama
 - Tabel **FORMAT BMKG**
 - Tabel **NUMERIC**
-- QC kelengkapan (per stasiun dan per tanggal)
-- QC unmapped names (indikasi masalah penamaan)
-- QC stasiun kosong total dan kosong di hari terakhir
-- Ringkasan akumulasi
-- Indeks **CDD/CWD terpanjang** serta **CH maksimum** pada window dasarian
-- Peta titik (lat lon) untuk visual QC, akumulasi, completeness, CDD/CWD, CH max
+- QC kelengkapan:
+  - per stasiun (completeness)
+  - per tanggal (jumlah pos yang ada record)
+  - stasiun kosong total pada window
+  - stasiun kosong pada hari terakhir window
+  - nama hasil mapping yang tidak ada di header resmi (indikasi masalah penamaan)
+- Ringkasan dasarian:
+  - total akumulasi semua pos
+  - coverage numeric
+  - hari terbasah (akumulasi semua pos) dan pos terbasah (akumulasi dasarian)
+- Fokus indeks dasarian dan kondisi terkini:
+  - **CDD current** dan **CWD current** (run yang sedang berlangsung dan harus berakhir di hari terakhir window)
+  - **Akumulasi CH tertinggi** (pos terbasah) dan **akumulasi CH terendah** (pos terkering)
+  - **CH minimum (ada hujan)**: minimum akumulasi dasarian dengan syarat total > 0
+  - **CH maksimum harian** (nilai harian maksimum dalam window) beserta tanggalnya
+  - Safeguard: jika nilai sama, semua pos yang tie akan ditampilkan (dipotong bila terlalu panjang)
+- Peta titik (lat lon) untuk visual:
+  - QC koordinat
+  - completeness
+  - akumulasi dasarian
+  - CDD/CWD (terpanjang dan current)
+  - CH max
 
 ### Tutorial singkat
 1. Upload CSV vertikal (boleh lebih dari 1 file).
 2. Pilih **Year**, **Month**, **Dasarian**.
-3. Atur threshold bila perlu.
+3. Atur threshold (default hari hujan **1.0 mm** bila diperlukan).
 4. Klik **Run**.
-5. Gunakan menu “Input / Hasil / QC / Tabel / Peta / Download” untuk berpindah tampilan tanpa scroll.
+5. Gunakan menu “Input / Hasil / QC / Tabel / Grafik / Peta / Download” untuk berpindah tampilan tanpa scroll.
 """
     )
 
@@ -1961,6 +1989,7 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
 
