@@ -1461,10 +1461,11 @@ elif st.session_state["page"] == "Grafik":
     st.subheader("Grafik curah hujan harian per pos (pilih satu atau banyak)")
 
     # station selector
+    default_station = "Stasiun Klimatologi Kediri"
     selected = st.multiselect(
         "Pilih Pos Hujan",
         options=HORIZONTAL_COLS,
-        default=["Sembalun"] if "Sembalun" in HORIZONTAL_COLS else [],
+        default=[default_station] if default_station in HORIZONTAL_COLS else [],
         help="Bisa pilih lebih dari satu untuk dibandingkan"
     )
 
@@ -1959,6 +1960,7 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
 
