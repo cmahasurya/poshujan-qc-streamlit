@@ -1023,11 +1023,27 @@ elif st.session_state["page"] == "QC":
         record_cells = int(present.notna().to_numpy().sum())
         total_cells = int(present.size)
         coverage_record_pct = round(record_cells / total_cells * 100, 2)
-
+        
+    n_complete = 0
+    pct_complete = 0.0
+    
+    if present is not None:
+        days_in_window = int(present.shape[0])
+        stn_days_present = present.notna().sum(axis=0).reindex(HORIZONTAL_COLS).fillna(0).astype(int)
+        n_complete = int((stn_days_present == days_in_window).sum())
+        pct_complete = round(n_complete / len(HORIZONTAL_COLS) * 100, 2)
+    else:
+        # fallback: if session lama belum punya present_matrix
+        stn_days_present = None
+    
     st.subheader("QC")
     st.write(f"Periode: **{MONTH_STR}** | Dasarian: **{das_n}** | Rentang: **1–{end_day}**")
     st.write(f"Total stasiun: **{len(HORIZONTAL_COLS)}**")
 
+    a1, a2 = st.columns([1, 3])
+    a1.metric("Pos lengkap (full)", f"{n_complete}/{len(HORIZONTAL_COLS)}", f"{pct_complete:.2f}%")
+    a2.caption("Pos lengkap = jumlah pos yang punya record di SEMUA hari pada window dasarian.")
+    
     q1, q2, q3, q4 = st.columns(4)
     q1.metric("Coverage record (%)", f"{coverage_record_pct}%")
     q2.metric("Cells with record", f"{record_cells}/{total_cells}")
@@ -1535,6 +1551,7 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
 
