@@ -899,8 +899,6 @@ elif st.session_state["page"] == "Hasil":
 
     top_cdd = derived.get("top_cdd", pd.DataFrame())
     top_cwd = derived.get("top_cwd", pd.DataFrame())
-    best_cdd = derived.get("best_cdd", None)
-    best_cwd = derived.get("best_cwd", None)
     best_ch = derived.get("best_ch", None)
 
     wide_num_out = outputs.get("wide_num_out", pd.DataFrame())
@@ -910,20 +908,18 @@ elif st.session_state["page"] == "Hasil":
     st.write(f"Threshold CWD dan hari hujan: **{rainy_thr} mm** | Threshold lebat: **{heavy_thr} mm**")
 
     # ============================================================
-    # 1) KPI utama: CURRENT RUN + LAST DAY + CH MAX
+    # 1) KPI utama: CURRENT RUN + STATION ACCUM + CH MAX
     # ============================================================
     st.markdown("---")
     st.subheader("Fokus utama (dasarian ini)")
 
-    # --- compute last-day accumulation across all stations (numeric) ---
-    last_day_total_mm = np.nan
-    last_day_valid_stations = np.nan
-    if isinstance(wide_num_out, pd.DataFrame) and (not wide_num_out.empty) and ("TGL" in wide_num_out.columns):
-        tmp_last = wide_num_out[wide_num_out["TGL"] == end_day]
-        if not tmp_last.empty:
-            last_vals = pd.to_numeric(tmp_last.drop(columns=["TGL"]).iloc[0], errors="coerce")
-            last_day_total_mm = float(np.nansum(last_vals.to_numpy()))
-            last_day_valid_stations = int(np.isfinite(last_vals.to_numpy()).sum())
+    # --- KPI 3 target: highest dasarian accumulation from a single station ---
+    max_station_name = None
+    max_station_total = np.nan
+    if isinstance(station_dash, pd.DataFrame) and (not station_dash.empty) and ("total_mm" in station_dash.columns):
+        tmp_top = station_dash.sort_values(["total_mm", "station"], ascending=[False, True]).iloc[0]
+        max_station_name = str(tmp_top["station"])
+        max_station_total = float(tmp_top["total_mm"])
 
     # --- current run highlights (ending at last day) ---
     best_cdd_cur = None
@@ -960,15 +956,15 @@ elif st.session_state["page"] == "Hasil":
     else:
         k2.metric("CWD current terpanjang", "-")
 
-    # KPI 3: akumulasi hujan hari terakhir (semua stasiun)
-    if np.isfinite(last_day_total_mm):
+    # KPI 3: akumulasi CH tertinggi dasarian (1 pos)
+    if max_station_name is not None and np.isfinite(max_station_total):
         k3.metric(
-            f"Akumulasi CH hari terakhir (TGL {end_day})",
-            f"{last_day_total_mm:.1f} mm",
-            f"Valid pos: {int(last_day_valid_stations)}"
+            "Akumulasi CH tertinggi (1 pos)",
+            f"{max_station_name}",
+            f"{max_station_total:.1f} mm"
         )
     else:
-        k3.metric(f"Akumulasi CH hari terakhir (TGL {end_day})", "-")
+        k3.metric("Akumulasi CH tertinggi (1 pos)", "-")
 
     # KPI 4: CH max dasarian (per stasiun)
     if best_ch is not None and pd.notna(best_ch.get("CH_max_mm", np.nan)):
@@ -1730,4 +1726,5 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
