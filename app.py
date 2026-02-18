@@ -1478,32 +1478,83 @@ background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
 
 
 # ============================================================
-# PAGE: Download
+# PAGE: Download (FULL REWRITE, SAFE + BACKWARD COMPATIBLE)
 # ============================================================
 elif st.session_state["page"] == "Download":
     require_results()
+
+    # safety: if schema changed, force user to re-run
+    if st.session_state.get("outputs") is None or st.session_state.get("derived") is None or st.session_state.get("meta") is None:
+        st.info("Hasil belum ada. Silakan Run dari halaman Input.")
+        st.stop()
 
     outputs = st.session_state["outputs"]
     meta = st.session_state["meta"]
     derived = st.session_state["derived"]
 
-    MONTH_STR = meta["MONTH_STR"]
-    das_n = meta["das_n"]
+    MONTH_STR = str(meta.get("MONTH_STR", "UNKNOWN"))
+    das_n = int(meta.get("das_n", 0))
 
-    wide_bmkg_out = outputs["wide_bmkg_out"]
-    wide_num_out = outputs["wide_num_out"]
-    qc_station = outputs["qc_station"]
-    qc_day = outputs["qc_day"]
+    # -------------------------
+    # Core outputs (must exist)
+    # -------------------------
+    wide_bmkg_out = outputs.get("wide_bmkg_out")
+    wide_num_out = outputs.get("wide_num_out")
+
+    if wide_bmkg_out is None or wide_num_out is None:
+        st.warning("Output utama tidak ditemukan. Silakan Run ulang di halaman Input.")
+        st.stop()
+
+    # -------------------------
+    # QC outputs (safe defaults)
+    # -------------------------
+    qc_station = outputs.get("qc_station", pd.DataFrame())
+    qc_day = outputs.get("qc_day", pd.DataFrame())
+    qc_gap = outputs.get("qc_gap", pd.DataFrame())
+    qc_empty_last_day = outputs.get("qc_empty_last_day", pd.DataFrame())
+
+    # compatibility for old vs new naming
     qc_unmapped = outputs.get("qc_unmapped", outputs.get("qc_mapped_not_in_header", pd.DataFrame()))
-    qc_gap = outputs["qc_gap"]
-    qc_empty_last_day = outputs["qc_empty_last_day"]
 
-    station_dash = derived["station_dash"]
-    day_dash = derived["day_dash"]
-    cdd_cwd_df = derived["cdd_cwd_df"]
+    # -------------------------
+    # Derived summaries (safe defaults)
+    # -------------------------
+    station_dash = derived.get("station_dash", pd.DataFrame())
+    day_dash = derived.get("day_dash", pd.DataFrame())
+    cdd_cwd_df = derived.get("cdd_cwd_df", pd.DataFrame())
 
-    coords_final = st.session_state["coords_final"].copy()
+    # -------------------------
+    # Warn if some sections missing (do not crash)
+    # -------------------------
+    missing = []
+    for k in ["qc_station", "qc_day", "qc_gap", "qc_empty_last_day"]:
+        if k not in outputs:
+            missing.append(k)
+    if ("qc_unmapped" not in outputs) and ("qc_mapped_not_in_header" not in outputs):
+        missing.append("qc_unmapped (or qc_mapped_not_in_header)")
+    for k in ["station_dash", "day_dash", "cdd_cwd_df"]:
+        if k not in derived:
+            missing.append(f"derived:{k}")
 
+    if missing:
+        st.warning(
+            "Beberapa output belum tersedia (mungkin karena perubahan kode). "
+            "Silakan Run ulang di halaman Input bila perlu.\n\n"
+            f"Missing: {missing}"
+        )
+
+    # -------------------------
+    # Coords
+    # -------------------------
+    coords_final = st.session_state.get("coords_final")
+    if coords_final is None:
+        coords_final = pd.DataFrame()
+    else:
+        coords_final = coords_final.copy()
+
+    # -------------------------
+    # Filenames
+    # -------------------------
     summary_station_name = f"SUMMARY_station_rain_{MONTH_STR}_das{das_n}.csv"
     summary_day_name = f"SUMMARY_day_rain_{MONTH_STR}_das{das_n}.csv"
     summary_cdd_cwd_name = f"SUMMARY_CDD_CWD_CHmax_{MONTH_STR}_das{das_n}.csv"
@@ -1511,16 +1562,27 @@ elif st.session_state["page"] == "Download":
 
     st.subheader("Download")
 
+    # -------------------------
+    # Choices
+    # -------------------------
+    fname_bmkg = f"rain_horizontal_{MONTH_STR}_das{das_n}_format_bmkg.csv"
+    fname_num = f"rain_horizontal_{MONTH_STR}_das{das_n}_numeric.csv"
+    fname_qc_station = f"QC_station_completeness_{MONTH_STR}_das{das_n}.csv"
+    fname_qc_day = f"QC_day_completeness_{MONTH_STR}_das{das_n}.csv"
+    fname_qc_unmapped = f"QC_unmapped_names_{MONTH_STR}_das{das_n}.csv"
+    fname_qc_gap = f"QC_station_empty_gap_{MONTH_STR}_das{das_n}.csv"
+    fname_qc_empty_last = f"QC_empty_last_day_{MONTH_STR}_das{das_n}.csv"
+
     download_choice = st.selectbox(
         "Pilih file yang ingin di-download",
         [
-            f"rain_horizontal_{MONTH_STR}_das{das_n}_format_bmkg.csv",
-            f"rain_horizontal_{MONTH_STR}_das{das_n}_numeric.csv",
-            f"QC_station_completeness_{MONTH_STR}_das{das_n}.csv",
-            f"QC_day_completeness_{MONTH_STR}_das{das_n}.csv",
-            f"QC_unmapped_names_{MONTH_STR}_das{das_n}.csv",
-            f"QC_station_empty_gap_{MONTH_STR}_das{das_n}.csv",
-            f"QC_empty_last_day_{MONTH_STR}_das{das_n}.csv",
+            fname_bmkg,
+            fname_num,
+            fname_qc_station,
+            fname_qc_day,
+            fname_qc_unmapped,
+            fname_qc_gap,
+            fname_qc_empty_last,
             summary_station_name,
             summary_day_name,
             summary_cdd_cwd_name,
@@ -1529,21 +1591,36 @@ elif st.session_state["page"] == "Download":
         index=0
     )
 
+    # -------------------------
+    # Map file -> dataframe
+    # -------------------------
     download_map = {
-        f"rain_horizontal_{MONTH_STR}_das{das_n}_format_bmkg.csv": wide_bmkg_out,
-        f"rain_horizontal_{MONTH_STR}_das{das_n}_numeric.csv": wide_num_out,
-        f"QC_station_completeness_{MONTH_STR}_das{das_n}.csv": qc_station,
-        f"QC_day_completeness_{MONTH_STR}_das{das_n}.csv": qc_day,
-        f"QC_unmapped_names_{MONTH_STR}_das{das_n}.csv": qc_unmapped,
-        f"QC_station_empty_gap_{MONTH_STR}_das{das_n}.csv": qc_gap,
-        f"QC_empty_last_day_{MONTH_STR}_das{das_n}.csv": qc_empty_last_day,
+        fname_bmkg: wide_bmkg_out,
+        fname_num: wide_num_out,
+        fname_qc_station: qc_station,
+        fname_qc_day: qc_day,
+        fname_qc_unmapped: qc_unmapped,
+        fname_qc_gap: qc_gap,
+        fname_qc_empty_last: qc_empty_last_day,
         summary_station_name: station_dash,
         summary_day_name: day_dash,
         summary_cdd_cwd_name: cdd_cwd_df,
         coords_name: coords_final,
     }
 
-    df_dl = download_map[download_choice]
+    df_dl = download_map.get(download_choice)
+    if df_dl is None:
+        st.error("Pilihan file tidak dikenali. Silakan pilih ulang.")
+        st.stop()
+
+    if not isinstance(df_dl, pd.DataFrame):
+        try:
+            df_dl = pd.DataFrame(df_dl)
+        except Exception:
+            st.error("Data tidak bisa dikonversi ke DataFrame untuk di-download.")
+            st.stop()
+
+    # If empty, still allow download (it is informative)
     st.download_button(
         label=f"Download: {download_choice}",
         data=to_csv_bytes(df_dl),
@@ -1551,10 +1628,3 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
-
-
-
-
-
-
-
