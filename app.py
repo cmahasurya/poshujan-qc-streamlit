@@ -354,10 +354,67 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
     df_month["NAME"] = normalize_station_name(df_month["NAME"])
     df_month["NAME_H"] = df_month["NAME"].replace(NAME_MAP)
 
+    # raw numeric parsing
     df_month["raw"] = pd.to_numeric(df_month["RAINFALL DAY MM"], errors="coerce")
     df_month["has_row"] = 1
 
+    # -------------------------
+    # QC 0: duplicate records per station day (before pivot)
+    # -------------------------
+    # duplicates are defined on TGL + NAME_H
+    dup_counts = (
+        df_month.groupby(["TGL", "NAME_H"], dropna=False)
+                .size()
+                .reset_index(name="n_records")
+    )
+    qc_duplicates = dup_counts[dup_counts["n_records"] > 1].copy()
+
+    if not qc_duplicates.empty:
+        # enrich with source file list and sample timestamps
+        src_list = (
+            df_month.groupby(["TGL", "NAME_H"])["__source_file__"]
+                    .apply(lambda s: ", ".join(sorted(set(map(str, s)))))
+                    .reset_index(name="source_files")
+        )
+        ts_list = (
+            df_month.groupby(["TGL", "NAME_H"])["DATA TIMESTAMP"]
+                    .apply(lambda s: ", ".join(sorted(set(map(str, s.astype(str).head(6))))))
+                    .reset_index(name="timestamps_sample")
+        )
+        qc_duplicates = (
+            qc_duplicates.merge(src_list, on=["TGL", "NAME_H"], how="left")
+                         .merge(ts_list, on=["TGL", "NAME_H"], how="left")
+                         .sort_values(["n_records", "TGL", "NAME_H"], ascending=[False, True, True])
+        )
+
+    # -------------------------
+    # QC 1: unknown raw names (not in mapping keys and not in official header)
+    # -------------------------
+    horizontal_set = set(HORIZONTAL_COLS)
+    map_keys_set = set(map(str, NAME_MAP.keys()))
+
+    # names after normalize, before mapping
+    raw_names_set = set(map(str, df_month["NAME"].dropna().unique()))
+    # names that are directly acceptable if they already match official header
+    ok_direct = raw_names_set & horizontal_set
+    # names that are acceptable because they are mappable
+    ok_mappable = raw_names_set & map_keys_set
+
+    unknown_raw = sorted(raw_names_set - ok_direct - ok_mappable)
+    qc_unknown_names = (
+        df_month[df_month["NAME"].isin(unknown_raw)][["NAME", "__source_file__"]]
+        .assign(n=1)
+        .groupby(["NAME"], as_index=False)
+        .agg(
+            count=("n", "sum"),
+            source_files=("__source_file__", lambda s: ", ".join(sorted(set(map(str, s)))))
+        )
+        .sort_values(["count", "NAME"], ascending=[False, True])
+    )
+
+    # -------------------------
     # NUMERIC mapping
+    # -------------------------
     rain_num = df_month["raw"].copy()
     rain_num[df_month["raw"].isna()] = np.nan
     rain_num[df_month["raw"] == 9999] = np.nan
@@ -365,6 +422,9 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
     rain_num[df_month["raw"] == 0] = 0.0
     df_month["rain_num"] = rain_num
 
+    # -------------------------
+    # Pivot to wide (first is kept, but duplicates are now reported in qc_duplicates)
+    # -------------------------
     wide_raw = (
         df_month.pivot_table(index="TGL", columns="NAME_H", values="raw", aggfunc="first")
         .reindex(index=all_days, columns=HORIZONTAL_COLS)
@@ -378,11 +438,15 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
         .reindex(index=all_days, columns=HORIZONTAL_COLS)
     )
 
+    # -------------------------
     # FORMAT BMKG
+    # -------------------------
     wide_bmkg = pd.DataFrame("x", index=wide_raw.index, columns=wide_raw.columns)
     row_exists = present.notna()
+
     wide_bmkg = wide_bmkg.mask(row_exists & (wide_raw == 0), "-")
     wide_bmkg = wide_bmkg.mask(row_exists & (wide_raw == 8888), "0")
+
     is_pos_measured = row_exists & (wide_raw.notna()) & (wide_raw > 0) & (wide_raw != 8888) & (wide_raw != 9999)
     wide_bmkg = wide_bmkg.mask(is_pos_measured, wide_raw.astype(float))
 
@@ -392,7 +456,9 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
     wide_num_out = wide_num.copy()
     wide_num_out.insert(0, "TGL", wide_num_out.index)
 
+    # -------------------------
     # QC summaries
+    # -------------------------
     station_summary = pd.DataFrame({
         "station": HORIZONTAL_COLS,
         "days_present": present.notna().sum(axis=0).astype(int).values,
@@ -402,16 +468,17 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
     qc_station = station_summary.sort_values(["completeness_pct", "station"], ascending=[True, True])
 
     day_summary = pd.DataFrame({
-        "TGL": present.index,
+        "TGL": present.index.astype(int),
         "stations_present": present.notna().sum(axis=1).astype(int).values,
         "total_stations": len(HORIZONTAL_COLS),
     })
     day_summary["completeness_pct"] = (day_summary["stations_present"] / day_summary["total_stations"] * 100).round(1)
     qc_day = day_summary
 
-    horizontal_set = set(HORIZONTAL_COLS)
-    mapped_not_in_horizontal = sorted(set(df_month["NAME_H"].unique()) - horizontal_set)
-    qc_unmapped = (
+    # Existing logic: mapped names that do not exist in official header
+    # This is not "unmapped". This is "mapped name not in header"
+    mapped_not_in_horizontal = sorted(set(map(str, df_month["NAME_H"].dropna().unique())) - horizontal_set)
+    qc_mapped_not_in_header = (
         df_month[df_month["NAME_H"].isin(mapped_not_in_horizontal)][["NAME", "NAME_H", "__source_file__"]]
         .drop_duplicates()
         .sort_values(["NAME_H", "NAME"])
@@ -439,6 +506,12 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
         float(end_day),
         float(end_day) - qc_empty_last_day["last_record_day_in_window"].astype(float)
     )
+
+    # add one more discriminator: was present before last day
+    # this separates never reported vs recently stopped
+    pre_last_any = present.loc[present.index < end_day].notna().sum(axis=0) > 0
+    qc_empty_last_day["was_present_before_last_day"] = pre_last_any.reindex(HORIZONTAL_COLS).fillna(False).astype(int).values
+
     qc_empty_last_day = qc_empty_last_day[qc_empty_last_day["is_empty_on_last_day"] == 1].copy()
     qc_empty_last_day = qc_empty_last_day.sort_values(["empty_days_up_to_last_day", "station"], ascending=[False, True])
 
@@ -447,13 +520,22 @@ def build_outputs(df_month: pd.DataFrame, end_day: int):
     return {
         "wide_bmkg_out": wide_bmkg_out,
         "wide_num_out": wide_num_out,
+
+        # QC tables
         "qc_station": qc_station,
         "qc_day": qc_day,
-        "qc_unmapped": qc_unmapped,
         "qc_gap": qc_gap,
         "qc_empty_last_day": qc_empty_last_day,
-    }
 
+        # QC name and duplicates
+        "qc_duplicates": qc_duplicates,
+        "qc_unknown_names": qc_unknown_names,
+        "qc_mapped_not_in_header": qc_mapped_not_in_header,
+
+        # also return record presence for robust coverage metric
+        "present_matrix": present,
+    }
+    
 def build_dashboard(wide_num_out: pd.DataFrame, rainy_threshold: float, heavy_threshold: float):
     num = wide_num_out.drop(columns=["TGL"]).apply(pd.to_numeric, errors="coerce")
     num2 = num.copy()
@@ -909,7 +991,7 @@ elif st.session_state["page"] == "Hasil":
 
 
 # ============================================================
-# PAGE: QC
+# PAGE: QC (drop in replacement)
 # ============================================================
 elif st.session_state["page"] == "QC":
     require_results()
@@ -921,28 +1003,63 @@ elif st.session_state["page"] == "QC":
     das_n = meta["das_n"]
     end_day = meta["end_day"]
 
-    wide_bmkg_out = outputs["wide_bmkg_out"]
     qc_station = outputs["qc_station"]
-    qc_unmapped = outputs["qc_unmapped"]
+    qc_day = outputs["qc_day"]
     qc_gap = outputs["qc_gap"]
     qc_empty_last_day = outputs["qc_empty_last_day"]
+
+    qc_duplicates = outputs.get("qc_duplicates", pd.DataFrame())
+    qc_unknown_names = outputs.get("qc_unknown_names", pd.DataFrame())
+    qc_mapped_not_in_header = outputs.get("qc_mapped_not_in_header", pd.DataFrame())
+
+    present = outputs.get("present_matrix")
+    if present is None:
+        # fallback if older state is loaded
+        wide_bmkg_out = outputs["wide_bmkg_out"]
+        record_cells = int((wide_bmkg_out.drop(columns=["TGL"]) != "x").to_numpy().sum())
+        total_cells = int(end_day * len(HORIZONTAL_COLS))
+        coverage_record_pct = round(record_cells / total_cells * 100, 2)
+    else:
+        record_cells = int(present.notna().to_numpy().sum())
+        total_cells = int(present.size)
+        coverage_record_pct = round(record_cells / total_cells * 100, 2)
 
     st.subheader("QC")
     st.write(f"Periode: **{MONTH_STR}** | Dasarian: **{das_n}** | Rentang: **1–{end_day}**")
     st.write(f"Total stasiun: **{len(HORIZONTAL_COLS)}**")
 
-    total_cells_bmkg = end_day * len(HORIZONTAL_COLS)
-    cells_with_row = int((wide_bmkg_out.drop(columns=["TGL"]) != "x").to_numpy().sum())
-    coverage_pct = round(cells_with_row / total_cells_bmkg * 100, 2)
-
-    q1, q2, q3 = st.columns(3)
-    q1.metric("Coverage record (%)", f"{coverage_pct}%")
-    q2.metric("Cells with record", f"{cells_with_row}/{total_cells_bmkg}")
+    q1, q2, q3, q4 = st.columns(4)
+    q1.metric("Coverage record (%)", f"{coverage_record_pct}%")
+    q2.metric("Cells with record", f"{record_cells}/{total_cells}")
     q3.metric("Stations", f"{len(HORIZONTAL_COLS)}")
+    q4.metric("Duplicate station day", f"{0 if qc_duplicates.empty else len(qc_duplicates)}")
 
     st.markdown("---")
+
     with st.expander("QC kelengkapan per stasiun"):
         st.dataframe(qc_station, use_container_width=True, height=520)
+
+    with st.expander("QC kelengkapan per hari"):
+        st.dataframe(qc_day, use_container_width=True, height=520)
+
+    with st.expander("Duplicate records per station day (perlu dicek sebelum pivot)"):
+        if qc_duplicates.empty:
+            st.write("Tidak ada duplicate record pada pasangan TGL dan station.")
+        else:
+            st.dataframe(qc_duplicates, use_container_width=True, height=520)
+            st.caption("Catatan: pivot memakai first, jadi duplicate akan memilih salah satu baris. QC ini menunjukkan pasangan yang perlu dibersihkan.")
+
+    with st.expander("Nama tidak dikenali (tidak masuk mapping dan tidak ada di header resmi)"):
+        if qc_unknown_names.empty:
+            st.write("Tidak ada nama raw yang tidak dikenali.")
+        else:
+            st.dataframe(qc_unknown_names, use_container_width=True, height=520)
+
+    with st.expander("Nama hasil mapping tidak ada di header resmi"):
+        if qc_mapped_not_in_header.empty:
+            st.write("Tidak ada.")
+        else:
+            st.dataframe(qc_mapped_not_in_header, use_container_width=True, height=520)
 
     with st.expander("Stasiun kosong total pada jendela dasarian"):
         empty_all_stations = qc_gap[qc_gap["has_any_record_1_to_end_das"] == 0]["station"].tolist()
@@ -956,10 +1073,7 @@ elif st.session_state["page"] == "QC":
             st.write("Tidak ada")
         else:
             st.dataframe(qc_empty_last_day, use_container_width=True)
-
-    if not qc_unmapped.empty:
-        with st.expander("Nama hasil mapping yang tidak ada di header horizontal"):
-            st.dataframe(qc_unmapped, use_container_width=True)
+            st.caption("was_present_before_last_day = 1 berarti pernah melapor sebelumnya, lalu berhenti menjelang hari terakhir.")
 
 # ============================================================
 # PAGE: Tabel
@@ -1421,6 +1535,7 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
 
