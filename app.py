@@ -760,7 +760,7 @@ if st.session_state["page"] == "Input":
     st.markdown("**Threshold ringkasan**")
     t1, t2 = st.columns(2)
     with t1:
-        rainy_thr = st.number_input("Batas hari hujan untuk CWD dan hitungan hari hujan (mm)", min_value=0.0, value=0.1, step=0.1)
+        rainy_thr = st.number_input("Batas hari hujan untuk CWD dan hitungan hari hujan (mm)", min_value=0.0, value=1.0, step=0.1)
     with t2:
         heavy_thr = st.number_input("Batas hujan lebat (mm)", min_value=0.0, value=20.0, step=1.0)
 
@@ -1551,6 +1551,7 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
 
