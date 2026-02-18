@@ -8,15 +8,16 @@ import pydeck as pdk
 # Page
 # ============================================================
 st.set_page_config(
-    page_title="Pos Hujan Dasarian: Rekap, Indeks, QC, dan Peta",
+    page_title="SEGARA : Sistem Ekspor & Generator Analisis Dasarian",
     layout="wide"
 )
 
-st.title("Pos Hujan Dasarian: Rekap, Indeks, QC, dan Peta")
+st.title("SEGARA : Sistem Ekspor & Generator Analisis Dasarian")
 st.caption(
-    "Transpose vertikal → horizontal (urut stasiun fix) + FORMAT BMKG + NUMERIC + QC + Ringkasan + "
-    "CDD/CWD/CHmax + Peta (lat lon dari coords.csv di repo)"
+    "Platform otomatis untuk rekap pos hujan dasarian: standarisasi format BMKG, kontrol kualitas data, "
+    "perhitungan indeks kekeringan & kebasahan, serta visualisasi spasial."
 )
+
 
 # ============================================================
 # Navigation (single-file multi-view; controllable like tabs)
@@ -1960,6 +1961,7 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
 
