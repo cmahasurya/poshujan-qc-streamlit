@@ -4,170 +4,130 @@ import numpy as np
 from datetime import date
 import pydeck as pdk
 
-# ============================================================
-# Page
-# ============================================================
 st.set_page_config(
-    page_title="SEGARA : Sistem Ekspor & Generator Analisis Dasarian",
+    page_title="SEGARA: Sistem Ekspor dan Generator Analisis Dasarian",
     layout="wide"
 )
 
-st.title("SEGARA : Sistem Ekspor & Generator Analisis Dasarian")
+st.title("SEGARA: Sistem Ekspor dan Generator Analisis Dasarian")
 st.caption(
-    "Platform otomatis untuk rekap pos hujan dasarian: standarisasi format BMKG, kontrol kualitas data, "
-    "perhitungan indeks kekeringan & kebasahan, serta visualisasi spasial."
+    "Platform operasional untuk pengolahan data pos hujan dasarian: standarisasi format BMKG, kontrol kualitas, "
+    "perhitungan ringkasan dan indeks basah-kering, serta visualisasi spasial."
 )
 
-
-# ============================================================
-# Navigation (single-file multi-view; controllable like tabs)
-# ============================================================
-PAGES = ["Input", "Hasil", "QC", "Tabel", "Grafik", "Peta", "Download"]
-
-
-if "page" not in st.session_state:
-    st.session_state["page"] = "Input"
-
-def goto(page: str):
-    if page in PAGES:
-        st.session_state["page"] = page
-
-def to_csv_bytes(df: pd.DataFrame) -> bytes:
-    return df.to_csv(index=False).encode("utf-8")
-
-# ============================================================
-# Panduan (collapsible, default closed)
-# ============================================================
 with st.expander("Panduan penggunaan SEGARA (klik untuk buka)", expanded=False):
     st.markdown("""
-## SEGARA : Sistem Ekspor & Generator Analisis Dasarian
+## SEGARA: Sistem Ekspor dan Generator Analisis Dasarian
 
-SEGARA digunakan untuk **standarisasi, kontrol kualitas, analisis, dan ekspor** data curah hujan dasarian secara otomatis dalam satu platform operasional.
+SEGARA adalah platform operasional untuk **standarisasi, kontrol kualitas, analisis, dan ekspor** data curah hujan dasarian secara terintegrasi.
 
-Aplikasi ini mengubah data curah hujan harian format **vertikal**  
-(baris per stasiun per tanggal) menjadi format **horizontal**  
-(1 baris per tanggal, kolom per stasiun) dengan urutan kolom **tetap dan baku BMKG**.
+Aplikasi ini mentransformasi data curah hujan harian berformat **vertikal** (baris per stasiun per tanggal) menjadi format **horizontal** (1 baris per tanggal, kolom per stasiun) dengan urutan kolom **tetap sesuai header baku BMKG**.
 
 ---
 
-### 📥 Input Data Curah Hujan
+### Input data curah hujan
 
-File CSV vertikal minimal memiliki kolom:
-
+File CSV vertikal minimal memiliki kolom berikut:
 - `NAME`
 - `DATA TIMESTAMP`
 - `RAINFALL DAY MM`
 
 ---
 
-### 🗺️ Koordinat untuk Tab Peta
+### Koordinat untuk tab Peta
 
-Aplikasi otomatis membaca **coords.csv** dari root repo dengan kolom:
-
-- POS HUJAN ID  
-- NAME  
-- CURRENT LATITUDE  
-- CURRENT LONGITUDE  
-- CURRENT ELEVATION M  
-
-Digunakan untuk visualisasi QC dan analisis spasial.
+Aplikasi membaca **coords.csv** dari root repo untuk kebutuhan visualisasi peta dan analisis spasial, dengan kolom:
+- `POS HUJAN ID`
+- `NAME`
+- `CURRENT LATITUDE`
+- `CURRENT LONGITUDE`
+- `CURRENT ELEVATION M`
 
 ---
 
-### ⚙️ Pengaturan Periode Analisis
+### Pengaturan periode analisis
 
-- **Year** → Tahun data  
-- **Month** → Bulan data (01–12)  
-- **Dasarian**  
-  - **Das 1** → tanggal 1–10  
-  - **Das 2** → tanggal 1–20  
-  - **Das 3** → 1 bulan penuh  
+- **Year**: tahun data  
+- **Month**: bulan data (01–12)  
+- **Dasarian**:
+  - **Das 1**: tanggal 1–10  
+  - **Das 2**: tanggal 11–20  
+  - **Das 3**: tanggal 21–akhir bulan  
 
 ---
 
-### 🌧️ Aturan Nilai – FORMAT BMKG (tampilan)
+### Aturan nilai format BMKG (tampilan)
 
 - raw = 0 → `-` (tidak hujan teramati)  
-- raw = 8888 → `0` (hujan sangat kecil / trace)  
-- raw = 9999 → `x` (tidak ada data / alat bermasalah)  
-- raw kosong / NaN → `x`  
-- Tidak ada baris data → `x`
+- raw = 8888 → `0` (hujan sangat kecil atau trace)  
+- raw = 9999 → `x` (tidak ada data atau alat bermasalah)  
+- raw kosong atau NaN → `x`  
+- tidak ada baris data pada tanggal tersebut → `x`
 
 ---
 
-### 🔢 Aturan Nilai – NUMERIC (perhitungan)
+### Aturan nilai numeric (perhitungan)
 
 - raw = 0 → 0.0  
 - raw = 8888 → 0.1 mm  
 - raw = 9999 → NaN  
-- raw kosong / NaN → NaN  
-- Tidak ada baris data → NaN  
+- raw kosong atau NaN → NaN  
+- tidak ada baris data pada tanggal tersebut → NaN  
 
 ---
 
-### 📊 Output Utama SEGARA
+### Output utama SEGARA
 
-#### Standarisasi & QC
-- Tabel **FORMAT BMKG**
-- Tabel **NUMERIC**
+#### Standarisasi dan QC
+- Tabel **Format BMKG**
+- Tabel **Numeric**
 - QC kelengkapan per stasiun
 - QC kelengkapan per tanggal
-- QC unmapped names (indikasi masalah penamaan)
-- QC stasiun kosong total
-- QC stasiun kosong pada hari terakhir
+- QC nama tidak dikenali atau tidak sesuai header (indikasi isu penamaan)
+- QC stasiun kosong pada seluruh window
+- QC stasiun kosong pada hari terakhir window
+- QC duplikasi record pada pasangan stasiun dan tanggal (bila ada)
 
-#### Analisis Dasarian
-- Akumulasi curah hujan per pos
-- Pos terbasah & terkering
-- **CDD & CWD current**
-- **CDD & CWD terpanjang**
-- **CH maksimum harian**
-- Coverage data
+#### Analisis dasarian
+- Akumulasi curah hujan per pos pada window dasarian terpilih
+- Pos terbasah dan terkering berdasarkan akumulasi dasarian
+- CDD dan CWD current (run yang berakhir pada hari terakhir window)
+- CDD dan CWD terpanjang dalam window
+- Curah hujan maksimum harian dalam window
+- Coverage data pada window (berdasarkan ketersediaan record)
 
-#### Visualisasi Spasial
+#### Visualisasi spasial
 - Peta akumulasi hujan
 - Peta kelengkapan data
-- Peta CDD & CWD
-- Peta CH maksimum
+- Peta CDD dan CWD
+- Peta curah hujan maksimum harian
 
-#### Ekspor Data
-- Semua tabel dan ringkasan dapat diunduh dalam format CSV.
+#### Ekspor data
+- Seluruh tabel dan ringkasan dapat diunduh dalam format CSV.
 
 ---
 
-### ▶️ Alur Penggunaan
+### Alur penggunaan
 
-1. Upload CSV vertikal (boleh lebih dari satu file).
+1. Unggah CSV vertikal (dapat lebih dari satu file).
 2. Pilih **Year**, **Month**, dan **Dasarian**.
 3. Atur threshold bila diperlukan.
-4. Klik **Run**.
-5. Gunakan menu:
-   **Input / Hasil / QC / Tabel / Grafik / Peta / Download**
-   untuk berpindah tampilan tanpa scroll.
+4. Klik **Run** untuk memproses data.
+5. Gunakan menu **Input / Hasil / QC / Tabel / Grafik / Peta / Download** untuk berpindah tampilan.
 
 ---
 
-### 🏢 Implementasi Operasional
+### Implementasi operasional
 
-SEGARA digunakan sebagai sistem pendukung pengolahan dan analisis data curah hujan dasarian di:
-
-**Stasiun Klimatologi Nusa Tenggara Barat**
-
-untuk meningkatkan:
-- konsistensi format data  
-- kecepatan analisis  
-- kualitas kontrol data  
-- kemudahan diseminasi informasi  
+SEGARA digunakan sebagai sistem pendukung pengolahan dan analisis data curah hujan dasarian di **Stasiun Klimatologi Nusa Tenggara Barat** untuk meningkatkan konsistensi format, ketepatan kontrol kualitas, kecepatan analisis, dan kemudahan diseminasi informasi.
 
 ---
 
-### 👤 Pengembang Sistem
+### Pengembang sistem
 
 **Cakra Mahasurya Atmojo Pamungkas**  
 Stasiun Klimatologi Nusa Tenggara Barat  
 Badan Meteorologi, Klimatologi, dan Geofisika (BMKG)
-
----
 """)
 
 
@@ -2025,6 +1985,7 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
 
