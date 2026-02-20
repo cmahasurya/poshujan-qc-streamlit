@@ -943,7 +943,7 @@ if st.session_state["page"] == "Input":
 
         df_month["TGL"] = df_month["DATA TIMESTAMP"].dt.day
 
-                YEAR = int(year)
+        YEAR = int(year)
         MM = str(month)
         MONTH_STR = f"{YEAR}-{MM}"
         das_n = int(dasarian)
@@ -2177,6 +2177,7 @@ elif st.session_state["page"] == "Download":
     # Optional: quick preview
     with st.expander("Preview (10 baris pertama)", expanded=False):
         st.dataframe(df_dl.head(10), use_container_width=True, height=320)
+
 
 
 
