@@ -886,184 +886,184 @@ if st.session_state["page"] == "Input":
         st.write(f"Duplikat lat lon: **{int((coords_final['qc_flag'] == 'DUP_LATLON').sum())}**")
         st.dataframe(coords_final.head(60), use_container_width=True, height=420)
 
-if run:
-    if not up_rain:
-        st.error("Upload file CSV vertikal curah hujan terlebih dahulu.")
-        st.stop()
-
-    YEAR = int(year)
-    MM = str(month)
-    MONTH_STR = f"{YEAR}-{MM}"
-    das_n = int(dasarian)
-
-    last_day = month_end_day(YEAR, int(MM))
-    if das_n == 1:
-        start_day, end_day = 1, 10
-    elif das_n == 2:
-        start_day, end_day = 11, 20
-    else:
-        start_day, end_day = 21, last_day
-
-    # -------------------------
-    # Read files (robust)
-    # -------------------------
-    def read_csv_robust(uploaded_file) -> pd.DataFrame:
-        attempts = [
-            (",", "utf-8"),
-            (";", "utf-8"),
-            ("\t", "utf-8"),
-            (",", "utf-8-sig"),
-            (";", "utf-8-sig"),
-            (",", "latin1"),
-            (";", "latin1"),
-            (",", "cp1252"),
-            (";", "cp1252"),
-        ]
-        last_err = None
-        for sep, enc in attempts:
+    if run:
+        if not up_rain:
+            st.error("Upload file CSV vertikal curah hujan terlebih dahulu.")
+            st.stop()
+    
+        YEAR = int(year)
+        MM = str(month)
+        MONTH_STR = f"{YEAR}-{MM}"
+        das_n = int(dasarian)
+    
+        last_day = month_end_day(YEAR, int(MM))
+        if das_n == 1:
+            start_day, end_day = 1, 10
+        elif das_n == 2:
+            start_day, end_day = 11, 20
+        else:
+            start_day, end_day = 21, last_day
+    
+        # -------------------------
+        # Read files (robust)
+        # -------------------------
+        def read_csv_robust(uploaded_file) -> pd.DataFrame:
+            attempts = [
+                (",", "utf-8"),
+                (";", "utf-8"),
+                ("\t", "utf-8"),
+                (",", "utf-8-sig"),
+                (";", "utf-8-sig"),
+                (",", "latin1"),
+                (";", "latin1"),
+                (",", "cp1252"),
+                (";", "cp1252"),
+            ]
+            last_err = None
+            for sep, enc in attempts:
+                try:
+                    uploaded_file.seek(0)
+                    df_try = pd.read_csv(uploaded_file, sep=sep, encoding=enc, engine="python")
+                    if df_try.shape[1] >= 2:
+                        return df_try
+                except Exception as e:
+                    last_err = e
+            raise last_err if last_err else RuntimeError("Unknown read_csv failure")
+    
+        dfs, bad_files, bad_details = [], [], []
+        for f in up_rain:
             try:
-                uploaded_file.seek(0)
-                df_try = pd.read_csv(uploaded_file, sep=sep, encoding=enc, engine="python")
-                if df_try.shape[1] >= 2:
-                    return df_try
+                tmp = read_csv_robust(f)
+                tmp["__source_file__"] = f.name
+                dfs.append(tmp)
             except Exception as e:
-                last_err = e
-        raise last_err if last_err else RuntimeError("Unknown read_csv failure")
-
-    dfs, bad_files, bad_details = [], [], []
-    for f in up_rain:
-        try:
-            tmp = read_csv_robust(f)
-            tmp["__source_file__"] = f.name
-            dfs.append(tmp)
-        except Exception as e:
-            bad_files.append(f.name)
-            bad_details.append(f"{f.name}: {type(e).__name__} - {e}")
-
-    if bad_files:
-        st.warning(f"File gagal dibaca dan diabaikan: {bad_files}")
-        with st.expander("Detail error pembacaan file", expanded=False):
-            st.code("\n".join(bad_details))
-
-    if not dfs:
-        st.error("Tidak ada file curah hujan valid untuk diproses.")
-        st.stop()
-
-    df = pd.concat(dfs, ignore_index=True)
-
-    # -------------------------
-    # Validate required columns (after read)
-    # -------------------------
-    required_cols = ["NAME", "DATA TIMESTAMP", "RAINFALL DAY MM"]
-    missing_cols = [c for c in required_cols if c not in df.columns]
-    if missing_cols:
-        st.error(f"Kolom wajib tidak ditemukan: {missing_cols}\nKolom terbaca: {list(df.columns)}")
-        st.stop()
-
-    # -------------------------
-    # Parse datetime FIRST (robust for your export format)
-    # -------------------------
-    ts = df["DATA TIMESTAMP"].astype(str).str.strip()
-
-    # Try strict parse for format like: "2026-01-01 00:00:00.0 +0:00"
-    dt = pd.to_datetime(ts, format="%Y-%m-%d %H:%M:%S.%f %z", errors="coerce")
-
-    # Fallback: strip trailing ".0 +0:00" then parse without tz
-    if dt.isna().mean() > 0.5:
-        ts2 = ts.str.replace(r"\.0\s*\+\d{1,2}:\d{2}$", "", regex=True)
-        dt = pd.to_datetime(ts2, format="%Y-%m-%d %H:%M:%S", errors="coerce")
-
-    df["DATA TIMESTAMP"] = dt
-    df = df[df["DATA TIMESTAMP"].notna()].copy()
-
-    if df.empty:
-        st.error("Semua DATA TIMESTAMP gagal diparse (menjadi NaT). Cek format timestamp pada file.")
-        st.stop()
-
-    # -------------------------
-    # Optional debug (SAFE)
-    # -------------------------
-    with st.expander("Debug: hasil baca + parse timestamp", expanded=False):
-        st.write("Kolom:", list(df.columns))
-        st.write("dtype DATA TIMESTAMP:", df["DATA TIMESTAMP"].dtype)
-        st.dataframe(df.head(20), use_container_width=True)
-
-    # -------------------------
-    # Filter month (NOW safe to use .dt)
-    # -------------------------
-    df_month = df[df["DATA TIMESTAMP"].dt.strftime("%Y-%m") == MONTH_STR].copy()
-    if df_month.empty:
-        st.error(f"Tidak ada baris untuk {MONTH_STR}. Periksa pilihan bulan atau data.")
-        st.stop()
-
-    df_month["TGL"] = df_month["DATA TIMESTAMP"].dt.day
-
-    # FULL MONTH DATA (source utama semua window)
-    df_month_full = df_month[df_month["TGL"].between(1, last_day)].copy()
-    if df_month_full.empty:
-        st.error(f"Tidak ada baris pada rentang tanggal 1 s.d. {last_day} untuk {MONTH_STR}.")
-        st.stop()
-
-    # -------------------------
-    # Build windows
-    # -------------------------
-    windows_def = dasarian_windows_to_build(YEAR, int(MM), das_n)
-    windows_out = {}
-
-    for key, (win_start, win_end) in windows_def.items():
-        out = build_outputs(
-            df_month_full,
-            month_start=1,
-            month_end=last_day,
-            win_start=win_start,
-            win_end=win_end
-        )
-
-        wide_num_full = out["wide_num_out"].copy()
-        wide_num_win = wide_num_full[wide_num_full["TGL"].between(int(win_start), int(win_end))].copy()
-
-        dash, daydash, hi = build_dashboard(wide_num_win, rainy_thr, heavy_thr)
-        cdd = compute_cdd_cwd(wide_num_win, wet_threshold=rainy_thr)
-
-        label = {
-            "das1": "Das 1 (TGL 1–10)",
-            "das2": "Das 2 (TGL 11–20)",
-            "das3": f"Das 3 (TGL 21–{last_day})",
-            "monthly": f"Bulanan (TGL 1–{last_day})",
-        }[key]
-
-        windows_out[key] = {
-            "key": key,
-            "label": label,
-            "start_day": int(win_start),
-            "end_day": int(win_end),
-            "outputs": out,
-            "station_dash": dash,
-            "day_dash": daydash,
-            "hi": hi,
-            "cdd_cwd_df": cdd,
+                bad_files.append(f.name)
+                bad_details.append(f"{f.name}: {type(e).__name__} - {e}")
+    
+        if bad_files:
+            st.warning(f"File gagal dibaca dan diabaikan: {bad_files}")
+            with st.expander("Detail error pembacaan file", expanded=False):
+                st.code("\n".join(bad_details))
+    
+        if not dfs:
+            st.error("Tidak ada file curah hujan valid untuk diproses.")
+            st.stop()
+    
+        df = pd.concat(dfs, ignore_index=True)
+    
+        # -------------------------
+        # Validate required columns (after read)
+        # -------------------------
+        required_cols = ["NAME", "DATA TIMESTAMP", "RAINFALL DAY MM"]
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            st.error(f"Kolom wajib tidak ditemukan: {missing_cols}\nKolom terbaca: {list(df.columns)}")
+            st.stop()
+    
+        # -------------------------
+        # Parse datetime FIRST (robust for your export format)
+        # -------------------------
+        ts = df["DATA TIMESTAMP"].astype(str).str.strip()
+    
+        # Try strict parse for format like: "2026-01-01 00:00:00.0 +0:00"
+        dt = pd.to_datetime(ts, format="%Y-%m-%d %H:%M:%S.%f %z", errors="coerce")
+    
+        # Fallback: strip trailing ".0 +0:00" then parse without tz
+        if dt.isna().mean() > 0.5:
+            ts2 = ts.str.replace(r"\.0\s*\+\d{1,2}:\d{2}$", "", regex=True)
+            dt = pd.to_datetime(ts2, format="%Y-%m-%d %H:%M:%S", errors="coerce")
+    
+        df["DATA TIMESTAMP"] = dt
+        df = df[df["DATA TIMESTAMP"].notna()].copy()
+    
+        if df.empty:
+            st.error("Semua DATA TIMESTAMP gagal diparse (menjadi NaT). Cek format timestamp pada file.")
+            st.stop()
+    
+        # -------------------------
+        # Optional debug (SAFE)
+        # -------------------------
+        with st.expander("Debug: hasil baca + parse timestamp", expanded=False):
+            st.write("Kolom:", list(df.columns))
+            st.write("dtype DATA TIMESTAMP:", df["DATA TIMESTAMP"].dtype)
+            st.dataframe(df.head(20), use_container_width=True)
+    
+        # -------------------------
+        # Filter month (NOW safe to use .dt)
+        # -------------------------
+        df_month = df[df["DATA TIMESTAMP"].dt.strftime("%Y-%m") == MONTH_STR].copy()
+        if df_month.empty:
+            st.error(f"Tidak ada baris untuk {MONTH_STR}. Periksa pilihan bulan atau data.")
+            st.stop()
+    
+        df_month["TGL"] = df_month["DATA TIMESTAMP"].dt.day
+    
+        # FULL MONTH DATA (source utama semua window)
+        df_month_full = df_month[df_month["TGL"].between(1, last_day)].copy()
+        if df_month_full.empty:
+            st.error(f"Tidak ada baris pada rentang tanggal 1 s.d. {last_day} untuk {MONTH_STR}.")
+            st.stop()
+    
+        # -------------------------
+        # Build windows
+        # -------------------------
+        windows_def = dasarian_windows_to_build(YEAR, int(MM), das_n)
+        windows_out = {}
+    
+        for key, (win_start, win_end) in windows_def.items():
+            out = build_outputs(
+                df_month_full,
+                month_start=1,
+                month_end=last_day,
+                win_start=win_start,
+                win_end=win_end
+            )
+    
+            wide_num_full = out["wide_num_out"].copy()
+            wide_num_win = wide_num_full[wide_num_full["TGL"].between(int(win_start), int(win_end))].copy()
+    
+            dash, daydash, hi = build_dashboard(wide_num_win, rainy_thr, heavy_thr)
+            cdd = compute_cdd_cwd(wide_num_win, wet_threshold=rainy_thr)
+    
+            label = {
+                "das1": "Das 1 (TGL 1–10)",
+                "das2": "Das 2 (TGL 11–20)",
+                "das3": f"Das 3 (TGL 21–{last_day})",
+                "monthly": f"Bulanan (TGL 1–{last_day})",
+            }[key]
+    
+            windows_out[key] = {
+                "key": key,
+                "label": label,
+                "start_day": int(win_start),
+                "end_day": int(win_end),
+                "outputs": out,
+                "station_dash": dash,
+                "day_dash": daydash,
+                "hi": hi,
+                "cdd_cwd_df": cdd,
+            }
+    
+        # -------------------------
+        # Save session
+        # -------------------------
+        st.session_state["meta"] = {
+            "MONTH_STR": MONTH_STR,
+            "YEAR": YEAR,
+            "MM": MM,
+            "last_day": int(last_day),
+            "das_n": int(das_n),
+            "rainy_thr": float(rainy_thr),
+            "heavy_thr": float(heavy_thr),
         }
-
-    # -------------------------
-    # Save session
-    # -------------------------
-    st.session_state["meta"] = {
-        "MONTH_STR": MONTH_STR,
-        "YEAR": YEAR,
-        "MM": MM,
-        "last_day": int(last_day),
-        "das_n": int(das_n),
-        "rainy_thr": float(rainy_thr),
-        "heavy_thr": float(heavy_thr),
-    }
-
-    st.session_state["derived"] = {"windows": windows_out}
-    st.session_state["view_window"] = f"das{das_n}"
-    st.session_state["outputs"] = windows_out[f"das{das_n}"]["outputs"]
-
-    st.success("Selesai diproses. Membuka halaman Hasil.")
-    goto("Hasil")
-    st.rerun()
+    
+        st.session_state["derived"] = {"windows": windows_out}
+        st.session_state["view_window"] = f"das{das_n}"
+        st.session_state["outputs"] = windows_out[f"das{das_n}"]["outputs"]
+    
+        st.success("Selesai diproses. Membuka halaman Hasil.")
+        goto("Hasil")
+        st.rerun()
 
 # ============================================================
 # PAGE: Hasil
@@ -2179,6 +2179,7 @@ elif st.session_state["page"] == "Download":
     # Optional: quick preview
     with st.expander("Preview (10 baris pertama)", expanded=False):
         st.dataframe(df_dl.head(10), use_container_width=True, height=320)
+
 
 
 
