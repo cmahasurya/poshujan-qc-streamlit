@@ -1584,7 +1584,7 @@ elif st.session_state["page"] == "QC":
 # ============================================================
 # PAGE: Tabel
 # ============================================================
-eelif st.session_state["page"] == "Tabel":
+elif st.session_state["page"] == "Tabel":
     require_results()
 
     meta = st.session_state["meta"]
@@ -2177,6 +2177,7 @@ elif st.session_state["page"] == "Download":
     # Optional: quick preview
     with st.expander("Preview (10 baris pertama)", expanded=False):
         st.dataframe(df_dl.head(10), use_container_width=True, height=320)
+
 
 
 
