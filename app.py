@@ -406,42 +406,70 @@ def fmt_station_list(df, col_station="station", col_val=None, col_tgl=None):
         return names_str, detail_str
     return names_str, ""
 
-def build_outputs(df_month: pd.DataFrame, start_day: int, end_day: int):
-    """
-    Build all outputs for a specific window [start_day..end_day] within a month.
-    - df_month must already be filtered to the target month (YYYY-MM) and contain TGL.
-    - start_day/end_day define the operational dasarian window.
-    """
-    all_days = np.arange(int(start_day), int(end_day) + 1)
+def dasarian_windows_to_build(year: int, month: int, selected_das: int):
+    last_day = month_end_day(year, month)
 
-    df_month = df_month.copy()
-    df_month["NAME"] = normalize_station_name(df_month["NAME"])
-    df_month["NAME_H"] = df_month["NAME"].replace(NAME_MAP)
+    windows = {}
+
+    # Das 1
+    if selected_das >= 1:
+        windows["das1"] = (1, 10)
+
+    # Das 2
+    if selected_das >= 2:
+        windows["das2"] = (11, 20)
+
+    # Das 3
+    if selected_das >= 3:
+        windows["das3"] = (21, last_day)
+
+    # Monthly always
+    windows["monthly"] = (1, last_day)
+
+    return windows
+
+def build_outputs(df_month_full: pd.DataFrame, month_start: int, month_end: int, win_start: int, win_end: int):
+    """
+    Build outputs for a given window [win_start..win_end], while keeping the transposed tables
+    always covering the full month [month_start..month_end].
+
+    df_month_full must already be filtered to the target month and contain column TGL.
+    """
+
+    # full month day axis for transposer tables
+    all_days = np.arange(int(month_start), int(month_end) + 1)
+    win_days = np.arange(int(win_start), int(win_end) + 1)
+
+    df_month_full = df_month_full.copy()
+    df_month_full["NAME"] = normalize_station_name(df_month_full["NAME"])
+    df_month_full["NAME_H"] = df_month_full["NAME"].replace(NAME_MAP)
 
     # raw numeric parsing
-    df_month["raw"] = pd.to_numeric(df_month["RAINFALL DAY MM"], errors="coerce")
-    df_month["has_row"] = 1
+    df_month_full["raw"] = pd.to_numeric(df_month_full["RAINFALL DAY MM"], errors="coerce")
+    df_month_full["has_row"] = 1
 
-    # -------------------------
-    # QC 0: duplicate records per station day (before pivot)
-    # -------------------------
+    # =========================
+    # QC 0: duplicates inside WINDOW (more actionable)
+    # =========================
+    df_win = df_month_full[df_month_full["TGL"].between(int(win_start), int(win_end))].copy()
+
     dup_counts = (
-        df_month.groupby(["TGL", "NAME_H"], dropna=False)
-                .size()
-                .reset_index(name="n_records")
+        df_win.groupby(["TGL", "NAME_H"], dropna=False)
+              .size()
+              .reset_index(name="n_records")
     )
     qc_duplicates = dup_counts[dup_counts["n_records"] > 1].copy()
 
     if not qc_duplicates.empty:
         src_list = (
-            df_month.groupby(["TGL", "NAME_H"])["__source_file__"]
-                    .apply(lambda s: ", ".join(sorted(set(map(str, s)))))
-                    .reset_index(name="source_files")
+            df_win.groupby(["TGL", "NAME_H"])["__source_file__"]
+                  .apply(lambda s: ", ".join(sorted(set(map(str, s)))))
+                  .reset_index(name="source_files")
         )
         ts_list = (
-            df_month.groupby(["TGL", "NAME_H"])["DATA TIMESTAMP"]
-                    .apply(lambda s: ", ".join(sorted(set(map(str, s.astype(str).head(6))))))
-                    .reset_index(name="timestamps_sample")
+            df_win.groupby(["TGL", "NAME_H"])["DATA TIMESTAMP"]
+                  .apply(lambda s: ", ".join(sorted(set(map(str, s.astype(str).head(6))))))
+                  .reset_index(name="timestamps_sample")
         )
         qc_duplicates = (
             qc_duplicates.merge(src_list, on=["TGL", "NAME_H"], how="left")
@@ -449,19 +477,19 @@ def build_outputs(df_month: pd.DataFrame, start_day: int, end_day: int):
                          .sort_values(["n_records", "TGL", "NAME_H"], ascending=[False, True, True])
         )
 
-    # -------------------------
-    # QC 1: unknown raw names (not in mapping keys and not in official header)
-    # -------------------------
+    # =========================
+    # QC 1: unknown raw names (use FULL MONTH to catch all)
+    # =========================
     horizontal_set = set(HORIZONTAL_COLS)
     map_keys_set = set(map(str, NAME_MAP.keys()))
 
-    raw_names_set = set(map(str, df_month["NAME"].dropna().unique()))
+    raw_names_set = set(map(str, df_month_full["NAME"].dropna().unique()))
     ok_direct = raw_names_set & horizontal_set
     ok_mappable = raw_names_set & map_keys_set
 
     unknown_raw = sorted(raw_names_set - ok_direct - ok_mappable)
     qc_unknown_names = (
-        df_month[df_month["NAME"].isin(unknown_raw)][["NAME", "__source_file__"]]
+        df_month_full[df_month_full["NAME"].isin(unknown_raw)][["NAME", "__source_file__"]]
         .assign(n=1)
         .groupby(["NAME"], as_index=False)
         .agg(
@@ -471,35 +499,35 @@ def build_outputs(df_month: pd.DataFrame, start_day: int, end_day: int):
         .sort_values(["count", "NAME"], ascending=[False, True])
     )
 
-    # -------------------------
-    # NUMERIC mapping
-    # -------------------------
-    rain_num = df_month["raw"].copy()
-    rain_num[df_month["raw"].isna()] = np.nan
-    rain_num[df_month["raw"] == 9999] = np.nan
-    rain_num[df_month["raw"] == 8888] = 0.1
-    rain_num[df_month["raw"] == 0] = 0.0
-    df_month["rain_num"] = rain_num
+    # =========================
+    # NUMERIC mapping (FULL MONTH)
+    # =========================
+    rain_num = df_month_full["raw"].copy()
+    rain_num[df_month_full["raw"].isna()] = np.nan
+    rain_num[df_month_full["raw"] == 9999] = np.nan
+    rain_num[df_month_full["raw"] == 8888] = 0.1
+    rain_num[df_month_full["raw"] == 0] = 0.0
+    df_month_full["rain_num"] = rain_num
 
-    # -------------------------
-    # Pivot to wide (first is kept, duplicates are reported in qc_duplicates)
-    # -------------------------
+    # =========================
+    # Pivot to wide (FULL MONTH axis 1..last_day)
+    # =========================
     wide_raw = (
-        df_month.pivot_table(index="TGL", columns="NAME_H", values="raw", aggfunc="first")
-        .reindex(index=all_days, columns=HORIZONTAL_COLS)
+        df_month_full.pivot_table(index="TGL", columns="NAME_H", values="raw", aggfunc="first")
+                    .reindex(index=all_days, columns=HORIZONTAL_COLS)
     )
     wide_num = (
-        df_month.pivot_table(index="TGL", columns="NAME_H", values="rain_num", aggfunc="first")
-        .reindex(index=all_days, columns=HORIZONTAL_COLS)
+        df_month_full.pivot_table(index="TGL", columns="NAME_H", values="rain_num", aggfunc="first")
+                    .reindex(index=all_days, columns=HORIZONTAL_COLS)
     )
     present = (
-        df_month.pivot_table(index="TGL", columns="NAME_H", values="has_row", aggfunc="first")
-        .reindex(index=all_days, columns=HORIZONTAL_COLS)
+        df_month_full.pivot_table(index="TGL", columns="NAME_H", values="has_row", aggfunc="first")
+                    .reindex(index=all_days, columns=HORIZONTAL_COLS)
     )
 
-    # -------------------------
-    # FORMAT BMKG
-    # -------------------------
+    # =========================
+    # FORMAT BMKG (FULL MONTH table)
+    # =========================
     wide_bmkg = pd.DataFrame("x", index=wide_raw.index, columns=wide_raw.columns)
     row_exists = present.notna()
 
@@ -510,40 +538,43 @@ def build_outputs(df_month: pd.DataFrame, start_day: int, end_day: int):
     wide_bmkg = wide_bmkg.mask(is_pos_measured, wide_raw.astype(float))
 
     wide_bmkg_out = wide_bmkg.copy()
-    wide_bmkg_out.insert(0, "TGL", wide_bmkg_out.index)
+    wide_bmkg_out.insert(0, "TGL", wide_bmkg_out.index.astype(int))
 
     wide_num_out = wide_num.copy()
-    wide_num_out.insert(0, "TGL", wide_num_out.index)
+    wide_num_out.insert(0, "TGL", wide_num_out.index.astype(int))
 
-    # -------------------------
-    # QC summaries
-    # -------------------------
+    # =========================
+    # QC summaries computed on WINDOW only
+    # =========================
+    present_win = present.loc[win_days].copy()
+
     station_summary = pd.DataFrame({
         "station": HORIZONTAL_COLS,
-        "days_present": present.notna().sum(axis=0).astype(int).values,
-        "total_days": len(present.index),
+        "days_present": present_win.notna().sum(axis=0).astype(int).values,
+        "total_days": len(present_win.index),
     })
     station_summary["completeness_pct"] = (station_summary["days_present"] / station_summary["total_days"] * 100).round(1)
     qc_station = station_summary.sort_values(["completeness_pct", "station"], ascending=[True, True])
 
     day_summary = pd.DataFrame({
-        "TGL": present.index.astype(int),
-        "stations_present": present.notna().sum(axis=1).astype(int).values,
+        "TGL": present_win.index.astype(int),
+        "stations_present": present_win.notna().sum(axis=1).astype(int).values,
         "total_stations": len(HORIZONTAL_COLS),
     })
     day_summary["completeness_pct"] = (day_summary["stations_present"] / day_summary["total_stations"] * 100).round(1)
     qc_day = day_summary
 
-    mapped_not_in_horizontal = sorted(set(map(str, df_month["NAME_H"].dropna().unique())) - horizontal_set)
+    mapped_not_in_horizontal = sorted(set(map(str, df_month_full["NAME_H"].dropna().unique())) - horizontal_set)
     qc_mapped_not_in_header = (
-        df_month[df_month["NAME_H"].isin(mapped_not_in_horizontal)][["NAME", "NAME_H", "__source_file__"]]
+        df_month_full[df_month_full["NAME_H"].isin(mapped_not_in_horizontal)][["NAME", "NAME_H", "__source_file__"]]
         .drop_duplicates()
         .sort_values(["NAME_H", "NAME"])
     )
 
-    last_present_day = present.notna().apply(lambda s: s[s].index.max() if s.any() else np.nan)
-    gap_days_since_last = (int(end_day) - last_present_day).where(~last_present_day.isna(), np.nan)
-    empty_all_window = present.notna().sum(axis=0) == 0
+    # gaps within window
+    last_present_day = present_win.notna().apply(lambda s: s[s].index.max() if s.any() else np.nan)
+    gap_days_since_last = (int(win_end) - last_present_day).where(~last_present_day.isna(), np.nan)
+    empty_all_window = present_win.notna().sum(axis=0) == 0
 
     qc_gap = pd.DataFrame({
         "station": HORIZONTAL_COLS,
@@ -552,7 +583,8 @@ def build_outputs(df_month: pd.DataFrame, start_day: int, end_day: int):
         "empty_days_since_last_record": gap_days_since_last.reindex(HORIZONTAL_COLS).values
     })
 
-    last_day_present = present.loc[int(end_day)].notna()
+    # empty on last day of window
+    last_day_present = present_win.loc[int(win_end)].notna()
     qc_empty_last_day = pd.DataFrame({
         "station": HORIZONTAL_COLS,
         "is_empty_on_last_day": (~last_day_present.reindex(HORIZONTAL_COLS).fillna(False)).astype(int).values,
@@ -560,11 +592,11 @@ def build_outputs(df_month: pd.DataFrame, start_day: int, end_day: int):
     })
     qc_empty_last_day["empty_days_up_to_last_day"] = np.where(
         qc_empty_last_day["last_record_day_in_window"].isna(),
-        float(end_day - start_day + 1),
-        float(end_day) - qc_empty_last_day["last_record_day_in_window"].astype(float)
+        float(win_end - win_start + 1),
+        float(win_end) - qc_empty_last_day["last_record_day_in_window"].astype(float)
     )
 
-    pre_last_any = present.loc[present.index < int(end_day)].notna().sum(axis=0) > 0
+    pre_last_any = present_win.loc[present_win.index < int(win_end)].notna().sum(axis=0) > 0
     qc_empty_last_day["was_present_before_last_day"] = pre_last_any.reindex(HORIZONTAL_COLS).fillna(False).astype(int).values
 
     qc_empty_last_day = qc_empty_last_day[qc_empty_last_day["is_empty_on_last_day"] == 1].copy()
@@ -573,10 +605,17 @@ def build_outputs(df_month: pd.DataFrame, start_day: int, end_day: int):
     assert list(wide_bmkg_out.columns[1:]) == HORIZONTAL_COLS, "Urutan kolom output tidak sesuai HORIZONTAL_COLS"
 
     return {
+        # full month transposer tables
         "wide_bmkg_out": wide_bmkg_out,
         "wide_num_out": wide_num_out,
 
-        # QC tables
+        # window metadata
+        "month_start": int(month_start),
+        "month_end": int(month_end),
+        "win_start": int(win_start),
+        "win_end": int(win_end),
+
+        # QC (WINDOW-based)
         "qc_station": qc_station,
         "qc_day": qc_day,
         "qc_gap": qc_gap,
@@ -587,8 +626,9 @@ def build_outputs(df_month: pd.DataFrame, start_day: int, end_day: int):
         "qc_unknown_names": qc_unknown_names,
         "qc_mapped_not_in_header": qc_mapped_not_in_header,
 
-        # robust coverage metric
-        "present_matrix": present,
+        # present matrices
+        "present_matrix_full": present,
+        "present_matrix_win": present_win,
     }
     
 def build_dashboard(wide_num_out: pd.DataFrame, rainy_threshold: float, heavy_threshold: float):
@@ -707,10 +747,47 @@ def require_results():
         st.session_state.get("outputs") is None
         or st.session_state.get("meta") is None
         or st.session_state.get("derived") is None
+        or not st.session_state.get("derived", {}).get("windows")
     ):
         st.info("Belum ada hasil. Silakan proses data di halaman Input.")
         st.stop()
 
+def get_windows():
+    d = st.session_state.get("derived", {})
+    return d.get("windows", {})
+
+def window_selector_ui():
+    windows = get_windows()
+    if not windows:
+        return None
+
+    # keep stable order
+    order = [k for k in ["das1", "das2", "das3", "monthly"] if k in windows]
+    labels = {k: windows[k]["label"] for k in order}
+
+    default_key = st.session_state.get("view_window", order[0])
+    if default_key not in order:
+        default_key = order[0]
+
+    # selector
+    sel = st.radio(
+        "Pilih periode tampilan",
+        options=order,
+        format_func=lambda k: labels.get(k, k),
+        index=order.index(default_key),
+        horizontal=True,
+        key="__window_selector__"
+    )
+
+    st.session_state["view_window"] = sel
+    return sel
+
+def get_active_bundle():
+    windows = get_windows()
+    key = st.session_state.get("view_window")
+    if not windows or key not in windows:
+        return None
+    return windows[key]
 
 # ============================================================
 # Top navigation bar
@@ -866,71 +943,121 @@ if st.session_state["page"] == "Input":
 
         df_month["TGL"] = df_month["DATA TIMESTAMP"].dt.day
 
-        # Full month (sekunder: insight bulanan)
+                YEAR = int(year)
+        MM = str(month)
+        MONTH_STR = f"{YEAR}-{MM}"
+        das_n = int(dasarian)
+
+        last_day = month_end_day(YEAR, int(MM))
+
+        # -------------------------
+        # Read files
+        # -------------------------
+        dfs = []
+        bad_files = []
+        for f in up_rain:
+            try:
+                tmp = pd.read_csv(f)
+                tmp["__source_file__"] = f.name
+                dfs.append(tmp)
+            except Exception:
+                bad_files.append(f.name)
+
+        if bad_files:
+            st.warning(f"File gagal dibaca dan diabaikan: {bad_files}")
+        if not dfs:
+            st.error("Tidak ada file curah hujan valid untuk diproses.")
+            st.stop()
+
+        df = pd.concat(dfs, ignore_index=True)
+        required_cols = ["NAME", "DATA TIMESTAMP", "RAINFALL DAY MM"]
+        missing_cols = [c for c in required_cols if c not in df.columns]
+        if missing_cols:
+            st.error(f"Kolom wajib tidak ditemukan: {missing_cols}")
+            st.stop()
+
+        df["DATA TIMESTAMP"] = pd.to_datetime(df["DATA TIMESTAMP"], errors="coerce")
+        df = df[df["DATA TIMESTAMP"].notna()].copy()
+
+        # -------------------------
+        # Filter bulan terpilih
+        # -------------------------
+        df_month = df[df["DATA TIMESTAMP"].dt.strftime("%Y-%m") == MONTH_STR].copy()
+        if df_month.empty:
+            st.error(f"Tidak ada baris untuk {MONTH_STR}. Periksa pilihan bulan atau data.")
+            st.stop()
+
+        df_month["TGL"] = df_month["DATA TIMESTAMP"].dt.day
+
+        # FULL MONTH DATA (source utama semua window)
         df_month_full = df_month[df_month["TGL"].between(1, last_day)].copy()
         if df_month_full.empty:
             st.error(f"Tidak ada baris pada rentang tanggal 1 s.d. {last_day} untuk {MONTH_STR}.")
             st.stop()
 
-        # Dasarian window (utama)
-        df_month_win = df_month[df_month["TGL"].between(start_day, end_day)].copy()
-        if df_month_win.empty:
-            st.error(f"Tidak ada baris pada rentang tanggal {start_day} s.d. {end_day} untuk {MONTH_STR}.")
-            st.stop()
-
         # -------------------------
-        # Proses dasarian (utama)
+        # Build windows: selected das includes previous
         # -------------------------
-        outputs = build_outputs(df_month_win, start_day=start_day, end_day=end_day)
-        station_dash, day_dash, hi = build_dashboard(outputs["wide_num_out"], rainy_thr, heavy_thr)
-        cdd_cwd_df = compute_cdd_cwd(outputs["wide_num_out"], wet_threshold=rainy_thr)
+        windows_def = dasarian_windows_to_build(YEAR, int(MM), das_n)
+        windows_out = {}
 
-        top_cdd = cdd_cwd_df.sort_values(["CDD_len", "station"], ascending=[False, True]).head(15)
-        top_cwd = cdd_cwd_df.sort_values(["CWD_len", "station"], ascending=[False, True]).head(15)
+        for key, (win_start, win_end) in windows_def.items():
+            out = build_outputs(
+                df_month_full,
+                month_start=1,
+                month_end=last_day,
+                win_start=win_start,
+                win_end=win_end
+            )
 
-        best_cdd = cdd_cwd_df.loc[cdd_cwd_df["CDD_len"].idxmax()] if len(cdd_cwd_df) else None
-        best_cwd = cdd_cwd_df.loc[cdd_cwd_df["CWD_len"].idxmax()] if len(cdd_cwd_df) else None
-        best_ch = cdd_cwd_df.loc[cdd_cwd_df["CH_max_mm"].idxmax()] if cdd_cwd_df["CH_max_mm"].notna().any() else None
+            # IMPORTANT: dashboard + cdd computed on WINDOW slice only
+            wide_num_full = out["wide_num_out"].copy()
+            wide_num_win = wide_num_full[wide_num_full["TGL"].between(int(win_start), int(win_end))].copy()
 
-        # -------------------------
-        # Insight bulanan (sekunder)
-        # -------------------------
-        outputs_m = build_outputs(df_month_full, start_day=1, end_day=last_day)
-        station_dash_m, day_dash_m, hi_m = build_dashboard(outputs_m["wide_num_out"], rainy_thr, heavy_thr)
+            dash, daydash, hi = build_dashboard(wide_num_win, rainy_thr, heavy_thr)
+            cdd = compute_cdd_cwd(wide_num_win, wet_threshold=rainy_thr)
+
+            label = {
+                "das1": "Das 1 (TGL 1–10)",
+                "das2": "Das 2 (TGL 11–20)",
+                "das3": f"Das 3 (TGL 21–{last_day})",
+                "monthly": f"Bulanan (TGL 1–{last_day})",
+            }[key]
+
+            windows_out[key] = {
+                "key": key,
+                "label": label,
+                "start_day": int(win_start),
+                "end_day": int(win_end),
+                "outputs": out,                # contains FULL MONTH tables + WINDOW QC
+                "station_dash": dash,          # WINDOW dashboard
+                "day_dash": daydash,           # WINDOW day dashboard
+                "hi": hi,                      # WINDOW highlights
+                "cdd_cwd_df": cdd,             # WINDOW indices
+            }
 
         # -------------------------
         # Save session
         # -------------------------
-        st.session_state["outputs"] = outputs
         st.session_state["meta"] = {
             "MONTH_STR": MONTH_STR,
-            "das_n": das_n,
-            "start_day": int(start_day),
-            "end_day": int(end_day),
-            "last_day": int(last_day),
             "YEAR": YEAR,
             "MM": MM,
+            "last_day": int(last_day),
+            "das_n": int(das_n),
             "rainy_thr": float(rainy_thr),
             "heavy_thr": float(heavy_thr),
         }
-        st.session_state["derived"] = {
-            "station_dash": station_dash,
-            "day_dash": day_dash,
-            "hi": hi,
-            "cdd_cwd_df": cdd_cwd_df,
-            "top_cdd": top_cdd,
-            "top_cwd": top_cwd,
-            "best_cdd": best_cdd,
-            "best_cwd": best_cwd,
-            "best_ch": best_ch,
 
-            # monthly bundle
-            "monthly": {
-                "station_dash": station_dash_m,
-                "day_dash": day_dash_m,
-                "hi": hi_m,
-            }
+        st.session_state["derived"] = {
+            "windows": windows_out
         }
+
+        # default view window = selected dasarian
+        st.session_state["view_window"] = f"das{das_n}"
+
+        # backward compatible for existing pages (they expect st.session_state["outputs"])
+        st.session_state["outputs"] = windows_out[f"das{das_n}"]["outputs"]
 
         st.success("Selesai diproses. Membuka halaman Hasil.")
         goto("Hasil")
@@ -943,31 +1070,30 @@ elif st.session_state["page"] == "Hasil":
     require_results()
 
     meta = st.session_state["meta"]
-    derived = st.session_state["derived"]
+
+    sel_key = window_selector_ui()
+    bundle = get_active_bundle()
+    if bundle is None:
+        st.info("Window belum tersedia. Silakan Run ulang.")
+        st.stop()
 
     MONTH_STR = meta["MONTH_STR"]
-    das_n = int(meta["das_n"])
-    start_day = int(meta["start_day"])
-    end_day = int(meta["end_day"])
-    last_day = int(meta.get("last_day", end_day))
-
+    last_day = int(meta["last_day"])
     rainy_thr = float(meta["rainy_thr"])
     heavy_thr = float(meta["heavy_thr"])
 
-    station_dash = derived.get("station_dash", pd.DataFrame())
-    day_dash = derived.get("day_dash", pd.DataFrame())
-    hi = derived.get("hi", {})
-    cdd_cwd_df = derived.get("cdd_cwd_df", pd.DataFrame())
+    start_day = int(bundle["start_day"])
+    end_day = int(bundle["end_day"])
 
-    top_cdd = derived.get("top_cdd", pd.DataFrame())
-    top_cwd = derived.get("top_cwd", pd.DataFrame())
+    outputs = bundle["outputs"]
+    station_dash = bundle.get("station_dash", pd.DataFrame())
+    day_dash = bundle.get("day_dash", pd.DataFrame())
+    hi = bundle.get("hi", {})
+    cdd_cwd_df = bundle.get("cdd_cwd_df", pd.DataFrame())
 
-    st.subheader("Hasil dasarian dan kondisi terkini")
-    st.write(f"Periode: **{MONTH_STR}** | Dasarian: **{das_n}** | Rentang: **TGL {start_day}–{end_day}**")
+    st.subheader("Hasil")
+    st.write(f"Periode: **{MONTH_STR}** | Tampilan: **{bundle['label']}** | Rentang analisis: **TGL {start_day}–{end_day}**")
     st.write(f"Threshold CWD dan hari hujan: **{rainy_thr} mm** | Threshold hujan lebat: **{heavy_thr} mm**")
-
-    st.markdown("---")
-    st.subheader("Fokus utama (dasarian ini)")
 
     # ============================================================
     # A) CURRENT RUN highlights (ending at last day) (tie safe)
@@ -1321,52 +1447,86 @@ elif st.session_state["page"] == "Hasil":
 elif st.session_state["page"] == "QC":
     require_results()
 
-    outputs = st.session_state["outputs"]
     meta = st.session_state["meta"]
 
-    MONTH_STR = meta["MONTH_STR"]
-    das_n = int(meta["das_n"])
-    start_day = int(meta.get("start_day", 1))
-    end_day = int(meta.get("end_day", start_day))
+    # choose which window to show (das1/das2/das3/monthly)
+    window_selector_ui()
+    bundle = get_active_bundle()
+    if bundle is None:
+        st.info("Window belum tersedia. Silakan Run ulang di halaman Input.")
+        st.stop()
 
-    qc_station = outputs["qc_station"]
-    qc_day = outputs["qc_day"]
-    qc_gap = outputs["qc_gap"]
-    qc_empty_last_day = outputs["qc_empty_last_day"]
+    MONTH_STR = str(meta.get("MONTH_STR", "UNKNOWN"))
+    win_label = str(bundle.get("label", "Window"))
+    start_day = int(bundle.get("start_day", 1))
+    end_day = int(bundle.get("end_day", start_day))
+
+    outputs = bundle.get("outputs", {})
+    if not outputs:
+        st.info("Output window kosong. Silakan Run ulang di halaman Input.")
+        st.stop()
+
+    # -------------------------
+    # QC tables (window-based)
+    # -------------------------
+    qc_station = outputs.get("qc_station", pd.DataFrame())
+    qc_day = outputs.get("qc_day", pd.DataFrame())
+    qc_gap = outputs.get("qc_gap", pd.DataFrame())
+    qc_empty_last_day = outputs.get("qc_empty_last_day", pd.DataFrame())
 
     qc_duplicates = outputs.get("qc_duplicates", pd.DataFrame())
     qc_unknown_names = outputs.get("qc_unknown_names", pd.DataFrame())
     qc_mapped_not_in_header = outputs.get("qc_mapped_not_in_header", pd.DataFrame())
 
-    present = outputs.get("present_matrix")
-
-    # coverage record must follow window size
+    # window presence matrix (preferred)
+    present_win = outputs.get("present_matrix_win", None)
     days_in_window = int(end_day - start_day + 1)
 
-    if present is None:
-        wide_bmkg_out = outputs["wide_bmkg_out"]
-        record_cells = int((wide_bmkg_out.drop(columns=["TGL"]) != "x").to_numpy().sum())
-        total_cells = int(days_in_window * len(HORIZONTAL_COLS))
+    # -------------------------
+    # Coverage calculations
+    # -------------------------
+    record_cells = 0
+    total_cells = int(days_in_window * len(HORIZONTAL_COLS))
+    coverage_record_pct = 0.0
+
+    if isinstance(present_win, pd.DataFrame) and (not present_win.empty):
+        record_cells = int(present_win.notna().to_numpy().sum())
+        total_cells = int(present_win.size)
         coverage_record_pct = round(record_cells / total_cells * 100, 2) if total_cells > 0 else 0.0
     else:
-        record_cells = int(present.notna().to_numpy().sum())
-        total_cells = int(present.size)
-        coverage_record_pct = round(record_cells / total_cells * 100, 2) if total_cells > 0 else 0.0
+        # fallback: compute using FULL MONTH bmkg table but restrict rows to window days
+        wide_bmkg_out = outputs.get("wide_bmkg_out", pd.DataFrame())
+        if isinstance(wide_bmkg_out, pd.DataFrame) and (not wide_bmkg_out.empty) and ("TGL" in wide_bmkg_out.columns):
+            tmp = wide_bmkg_out[wide_bmkg_out["TGL"].between(start_day, end_day)].copy()
+            if not tmp.empty:
+                record_cells = int((tmp.drop(columns=["TGL"]) != "x").to_numpy().sum())
+                total_cells = int(days_in_window * len(HORIZONTAL_COLS))
+                coverage_record_pct = round(record_cells / total_cells * 100, 2) if total_cells > 0 else 0.0
 
+    # complete stations (must have record every day in window)
     n_complete = 0
     pct_complete = 0.0
-    if present is not None:
-        stn_days_present = present.notna().sum(axis=0).reindex(HORIZONTAL_COLS).fillna(0).astype(int)
+    if isinstance(present_win, pd.DataFrame) and (not present_win.empty):
+        stn_days_present = (
+            present_win.notna()
+                       .sum(axis=0)
+                       .reindex(HORIZONTAL_COLS)
+                       .fillna(0)
+                       .astype(int)
+        )
         n_complete = int((stn_days_present == days_in_window).sum())
         pct_complete = round(n_complete / len(HORIZONTAL_COLS) * 100, 2) if len(HORIZONTAL_COLS) else 0.0
 
+    # -------------------------
+    # Header
+    # -------------------------
     st.subheader("QC")
-    st.write(f"Periode: **{MONTH_STR}** | Dasarian: **{das_n}** | Rentang: **TGL {start_day}–{end_day}**")
+    st.write(f"Periode: **{MONTH_STR}** | Tampilan: **{win_label}** | Rentang: **TGL {start_day}–{end_day}**")
     st.write(f"Total stasiun: **{len(HORIZONTAL_COLS)}**")
 
     a1, a2 = st.columns([1, 3])
     a1.metric("Pos lengkap (full)", f"{n_complete}/{len(HORIZONTAL_COLS)}", f"{pct_complete:.2f}%")
-    a2.caption("Pos lengkap = jumlah pos yang punya record di semua hari pada window dasarian.")
+    a2.caption("Pos lengkap = jumlah pos yang punya record pada semua hari dalam window aktif.")
 
     q1, q2, q3, q4 = st.columns(4)
     q1.metric("Coverage record (%)", f"{coverage_record_pct}%")
@@ -1376,6 +1536,9 @@ elif st.session_state["page"] == "QC":
 
     st.markdown("---")
 
+    # -------------------------
+    # Tables
+    # -------------------------
     with st.expander("QC kelengkapan per stasiun"):
         st.dataframe(qc_station, use_container_width=True, height=520)
 
@@ -1401,38 +1564,67 @@ elif st.session_state["page"] == "QC":
         else:
             st.dataframe(qc_mapped_not_in_header, use_container_width=True, height=520)
 
-    with st.expander("Stasiun kosong total pada window dasarian"):
-        empty_all_stations = qc_gap[qc_gap["has_any_record_start_to_end"] == 0]["station"].tolist()
-        if empty_all_stations:
-            st.dataframe(pd.DataFrame({"station": empty_all_stations}), use_container_width=True)
+    with st.expander("Stasiun kosong total pada window aktif"):
+        if qc_gap.empty:
+            st.write("Tidak ada.")
         else:
-            st.write("Tidak ada")
+            empty_all_stations = qc_gap[qc_gap["has_any_record_start_to_end"] == 0]["station"].astype(str).tolist()
+            if empty_all_stations:
+                st.dataframe(pd.DataFrame({"station": empty_all_stations}), use_container_width=True)
+            else:
+                st.write("Tidak ada")
 
-    with st.expander(f"Stasiun kosong pada hari terakhir (TGL={end_day})"):
+    with st.expander(f"Stasiun kosong pada hari terakhir window (TGL={end_day})"):
         if qc_empty_last_day.empty:
             st.write("Tidak ada")
         else:
             st.dataframe(qc_empty_last_day, use_container_width=True)
-            st.caption("was_present_before_last_day = 1 berarti pernah melapor pada hari sebelumnya, lalu berhenti menjelang hari terakhir.")
+            st.caption("was_present_before_last_day = 1 berarti pernah melapor pada hari sebelumnya, lalu berhenti menjelang hari terakhir window.")
 
 # ============================================================
 # PAGE: Tabel
 # ============================================================
-elif st.session_state["page"] == "Tabel":
+eelif st.session_state["page"] == "Tabel":
     require_results()
 
-    outputs = st.session_state["outputs"]
-    wide_bmkg_out = outputs["wide_bmkg_out"]
-    wide_num_out = outputs["wide_num_out"]
+    meta = st.session_state["meta"]
+
+    # choose which window to show
+    window_selector_ui()
+    bundle = get_active_bundle()
+    if bundle is None:
+        st.info("Window belum tersedia. Silakan Run ulang di halaman Input.")
+        st.stop()
+
+    MONTH_STR = str(meta.get("MONTH_STR", "UNKNOWN"))
+    win_label = str(bundle.get("label", "Window"))
+    start_day = int(bundle.get("start_day", 1))
+    end_day = int(bundle.get("end_day", start_day))
+
+    outputs = bundle.get("outputs", {})
+    if not outputs:
+        st.info("Output window kosong. Silakan Run ulang di halaman Input.")
+        st.stop()
+
+    wide_bmkg_out = outputs.get("wide_bmkg_out", pd.DataFrame())
+    wide_num_out = outputs.get("wide_num_out", pd.DataFrame())
+
+    if wide_bmkg_out.empty or wide_num_out.empty:
+        st.warning("Tabel output tidak ditemukan untuk window ini. Silakan Run ulang di halaman Input.")
+        st.stop()
 
     st.subheader("Tabel Output")
+    st.write(f"Periode: **{MONTH_STR}** | Tampilan: **{win_label}** | Rentang: **TGL {start_day}–{end_day}**")
 
     view_choice = st.radio(
         "Pilih tampilan",
-        options=["FORMAT BMKG (x / - / 0 / angka)", "NUMERIC (NaN / 0.1 / angka)"],
+        options=[
+            "FORMAT BMKG (x / - / 0 / angka)",
+            "NUMERIC (NaN / 0.1 / angka)"
+        ],
         index=0,
         horizontal=True,
-        key="view_choice"
+        key="table_view_choice"
     )
 
     if view_choice.startswith("FORMAT BMKG"):
@@ -1446,12 +1638,36 @@ elif st.session_state["page"] == "Tabel":
 elif st.session_state["page"] == "Grafik":
     require_results()
 
-    outputs = st.session_state["outputs"]
     meta = st.session_state["meta"]
 
-    wide_num_out = outputs["wide_num_out"].copy()
+    # choose which window to show
+    window_selector_ui()
+    bundle = get_active_bundle()
+    if bundle is None:
+        st.stop()
 
-    st.subheader("Grafik curah hujan harian per pos (pilih satu atau banyak)")
+    MONTH_STR = str(meta.get("MONTH_STR", "UNKNOWN"))
+    win_label = str(bundle.get("label", "Window"))
+    start_day = int(bundle.get("start_day", 1))
+    end_day = int(bundle.get("end_day", start_day))
+
+    outputs = bundle.get("outputs", {})
+    if not outputs:
+        st.info("Output window kosong. Silakan Run ulang di halaman Input.")
+        st.stop()
+
+    wide_num_out = outputs.get("wide_num_out")
+    if wide_num_out is None or wide_num_out.empty:
+        st.warning("Tabel NUMERIC tidak tersedia untuk window ini.")
+        st.stop()
+
+    # CDD/CWD bundle (prefer per-window if available, fallback to old derived)
+    cdd_cwd_df = bundle.get("cdd_cwd_df")
+    if cdd_cwd_df is None:
+        cdd_cwd_df = st.session_state.get("derived", {}).get("cdd_cwd_df", pd.DataFrame())
+
+    st.subheader("Grafik curah hujan harian per pos")
+    st.write(f"Periode: **{MONTH_STR}** | Tampilan: **{win_label}** | Rentang: **TGL {start_day}–{end_day}**")
 
     # station selector
     default_station = "Stasiun Klimatologi Kediri"
@@ -1459,29 +1675,34 @@ elif st.session_state["page"] == "Grafik":
         "Pilih Pos Hujan",
         options=HORIZONTAL_COLS,
         default=[default_station] if default_station in HORIZONTAL_COLS else [],
-        help="Bisa pilih lebih dari satu untuk dibandingkan"
+        help="Bisa pilih lebih dari satu untuk dibandingkan",
+        key="chart_station_multiselect"
     )
 
     if not selected:
         st.info("Pilih minimal 1 pos hujan.")
         st.stop()
 
-    # prepare long format
+    # prepare data (wide for plotting)
     dfp = wide_num_out[["TGL"] + selected].copy()
-    dfp_long = dfp.melt(id_vars=["TGL"], var_name="station", value_name="rain_mm")
-    dfp_long["rain_mm"] = pd.to_numeric(dfp_long["rain_mm"], errors="coerce")
+    for c in selected:
+        dfp[c] = pd.to_numeric(dfp[c], errors="coerce")
 
-    # optional: display last day conditions for selected stations
-    cdd_cwd_df = st.session_state["derived"]["cdd_cwd_df"].copy()
-    cur_sel = cdd_cwd_df[cdd_cwd_df["station"].isin(selected)][
-        ["station","CDD_cur_len","CDD_cur_start","CWD_cur_len","CWD_cur_start"]
-    ].copy()
-
+    # optional: show current run (ending at last day of this window)
     st.markdown("### Kondisi terkini di hari terakhir window")
-    st.dataframe(cur_sel.sort_values("station"), use_container_width=True, height=240)
+    if isinstance(cdd_cwd_df, pd.DataFrame) and (not cdd_cwd_df.empty):
+        cols_want = [c for c in ["station", "CDD_cur_len", "CDD_cur_start", "CDD_cur_end",
+                                 "CWD_cur_len", "CWD_cur_start", "CWD_cur_end",
+                                 "CH_max_mm", "CH_max_TGL"] if c in cdd_cwd_df.columns]
+        cur_sel = cdd_cwd_df[cdd_cwd_df["station"].isin(selected)][cols_want].copy()
+        if cur_sel.empty:
+            st.caption("Tidak ada ringkasan indeks untuk pos yang dipilih.")
+        else:
+            st.dataframe(cur_sel.sort_values("station"), use_container_width=True, height=260)
+    else:
+        st.caption("Ringkasan indeks belum tersedia untuk window ini.")
 
     st.markdown("### Time series")
-    # Streamlit can plot multi-line if you pivot to wide with TGL index
     chart_df = dfp.set_index("TGL")
     st.line_chart(chart_df)
 
@@ -1490,36 +1711,69 @@ elif st.session_state["page"] == "Grafik":
 
 
 # ============================================================
-# PAGE: Peta
+# PAGE: Peta  (window-aware: das1/das2/das3/monthly)
 # ============================================================
 elif st.session_state["page"] == "Peta":
     st.subheader("Peta interaktif stasiun (hover untuk tooltip)")
 
     coords_final = st.session_state["coords_final"].copy()
 
-    # -----------------------------
-    # Join hasil jika tersedia
-    # -----------------------------
+    # ---------------------------------
+    # Window selector (das1/das2/das3/monthly)
+    # ---------------------------------
     if st.session_state.get("outputs") is not None:
-        outputs = st.session_state["outputs"]
-        derived = st.session_state["derived"]
+        # show selector only if results exist
+        window_selector_ui()
+        bundle = get_active_bundle()
+    else:
+        bundle = None
 
-        qc_station = outputs["qc_station"][["station", "completeness_pct"]].copy()
-        station_dash = derived["station_dash"][["station", "total_mm", "max_mm", "tgl_max"]].copy()
-        cdd_cwd_df = derived["cdd_cwd_df"][[
-            "station",
-            "CDD_len", "CWD_len",
-            "CDD_cur_len", "CWD_cur_len",
-            "CH_max_mm", "CH_max_TGL"
-        ]].copy()
+    # ---------------------------------
+    # Join results (if available)
+    # ---------------------------------
+    if bundle is not None:
+        outputs = bundle.get("outputs", {})
+        station_dash = bundle.get("station_dash", pd.DataFrame())
+        cdd_cwd_df = bundle.get("cdd_cwd_df", pd.DataFrame())
 
+        # QC completeness from window output
+        qc_station = outputs.get("qc_station", pd.DataFrame())
+        if isinstance(qc_station, pd.DataFrame) and (not qc_station.empty) and ("station" in qc_station.columns):
+            qc_station = qc_station[["station", "completeness_pct"]].copy() if "completeness_pct" in qc_station.columns else qc_station[["station"]].copy()
+        else:
+            qc_station = pd.DataFrame(columns=["station", "completeness_pct"])
+
+        # station dashboard (total, max, tgl_max)
+        if not (isinstance(station_dash, pd.DataFrame) and (not station_dash.empty)):
+            station_dash = pd.DataFrame(columns=["station", "total_mm", "max_mm", "tgl_max"])
+        else:
+            keep_sd = [c for c in ["station", "total_mm", "max_mm", "tgl_max"] if c in station_dash.columns]
+            station_dash = station_dash[keep_sd].copy()
+
+        # cdd/cwd table
+        if not (isinstance(cdd_cwd_df, pd.DataFrame) and (not cdd_cwd_df.empty)):
+            cdd_cwd_df = pd.DataFrame(columns=[
+                "station", "CDD_len", "CWD_len", "CDD_cur_len", "CWD_cur_len", "CH_max_mm", "CH_max_TGL"
+            ])
+        else:
+            keep_idx = [c for c in [
+                "station",
+                "CDD_len", "CWD_len",
+                "CDD_cur_len", "CWD_cur_len",
+                "CH_max_mm", "CH_max_TGL"
+            ] if c in cdd_cwd_df.columns]
+            cdd_cwd_df = cdd_cwd_df[keep_idx].copy()
 
         map_df = (
             coords_final.merge(qc_station, on="station", how="left")
                        .merge(station_dash, on="station", how="left")
                        .merge(cdd_cwd_df, on="station", how="left")
         )
-        st.caption("Peta sudah digabung dengan hasil curah hujan, QC, dan indeks.")
+
+        win_label = str(bundle.get("label", "Window"))
+        start_day = int(bundle.get("start_day", 1))
+        end_day = int(bundle.get("end_day", start_day))
+        st.caption(f"Peta digabung dengan hasil: **{win_label}** (TGL {start_day}–{end_day}).")
     else:
         map_df = coords_final.copy()
         st.info("Hasil curah hujan belum diproses. Peta hanya menampilkan koordinat dan QC koordinat.")
@@ -1529,17 +1783,18 @@ elif st.session_state["page"] == "Peta":
     # -----------------------------
     c1, c2, c3, c4 = st.columns([1, 1, 1.1, 1.2])
     with c1:
-        hide_missing = st.checkbox("Sembunyikan stasiun tanpa koordinat", value=True)
+        hide_missing = st.checkbox("Sembunyikan stasiun tanpa koordinat", value=True, key="map_hide_missing")
     with c2:
-        show_only_bad = st.checkbox("Hanya QC koordinat bermasalah", value=False)
+        show_only_bad = st.checkbox("Hanya QC koordinat bermasalah", value=False, key="map_show_only_bad")
     with c3:
-        point_size = st.slider("Ukuran titik", min_value=3, max_value=18, value=9, step=1)
+        point_size = st.slider("Ukuran titik", min_value=3, max_value=18, value=9, step=1, key="map_point_size")
     with c4:
         mode = st.radio(
             "Mode peta",
             options=["Titik (Scatter)", "Heatmap (nilai layer)"],
             index=0,
-            horizontal=True
+            horizontal=True,
+            key="map_mode"
         )
 
     plot_df = map_df.copy()
@@ -1557,17 +1812,17 @@ elif st.session_state["page"] == "Peta":
         options=[
             "QC Koordinat (flag)",
             "Kelengkapan data (completeness_pct)",
-            "Akumulasi dasarian (total_mm)",
+            "Akumulasi window (total_mm)",
             "CDD terpanjang (CDD_len)",
             "CWD terpanjang (CWD_len)",
             "CDD terkini (CDD_cur_len)",
             "CWD terkini (CWD_cur_len)",
             "CH maksimum (CH_max_mm)"
         ],
+        key="map_layer"
     )
 
     left, right = st.columns([4.2, 1.3])
-
     with left:
         st.markdown("### Map")
     with right:
@@ -1580,7 +1835,6 @@ elif st.session_state["page"] == "Peta":
         return max(0.0, min(1.0, x))
 
     def value_to_rgb(v, vmin, vmax):
-        # gradient: rendah -> biru, tinggi -> merah
         if pd.isna(v) or pd.isna(vmin) or pd.isna(vmax) or vmax == vmin:
             return [160, 160, 160, 180]
         t = clamp01((float(v) - float(vmin)) / (float(vmax) - float(vmin)))
@@ -1641,63 +1895,41 @@ background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
 """,
                 unsafe_allow_html=True
             )
-            st.write(
-                pd.DataFrame(
-                    {
-                        "min": [q0],
-                        "p25": [q25],
-                        "median": [q50],
-                        "p75": [q75],
-                        "max": [q100],
-                    }
-                )
-            )
+            st.write(pd.DataFrame({"min": [q0], "p25": [q25], "median": [q50], "p75": [q75], "max": [q100]}))
 
     # -----------------------------
-    # Tentukan metric column + label
+    # Metric column + label
     # -----------------------------
-    metric_col = None
-    metric_label = None
-
+    metric_col, metric_label = None, None
     if layer == "QC Koordinat (flag)":
-        metric_col = "qc_flag"
-        metric_label = "QC"
+        metric_col, metric_label = "qc_flag", "QC"
     elif layer == "Kelengkapan data (completeness_pct)":
-        metric_col = "completeness_pct"
-        metric_label = "Completeness (%)"
-    elif layer == "Akumulasi dasarian (total_mm)":
-        metric_col = "total_mm"
-        metric_label = "Total (mm)"
+        metric_col, metric_label = "completeness_pct", "Completeness (%)"
+    elif layer == "Akumulasi window (total_mm)":
+        metric_col, metric_label = "total_mm", "Total (mm)"
     elif layer == "CDD terpanjang (CDD_len)":
-        metric_col = "CDD_len"
-        metric_label = "CDD (hari)"
+        metric_col, metric_label = "CDD_len", "CDD (hari)"
     elif layer == "CWD terpanjang (CWD_len)":
-        metric_col = "CWD_len"
-        metric_label = "CWD (hari)"
+        metric_col, metric_label = "CWD_len", "CWD (hari)"
     elif layer == "CH maksimum (CH_max_mm)":
-        metric_col = "CH_max_mm"
-        metric_label = "CH max (mm)"
+        metric_col, metric_label = "CH_max_mm", "CH max (mm)"
     elif layer == "CDD terkini (CDD_cur_len)":
-        metric_col = "CDD_cur_len"
-        metric_label = "CDD current (hari)"
+        metric_col, metric_label = "CDD_cur_len", "CDD current (hari)"
     elif layer == "CWD terkini (CWD_cur_len)":
-        metric_col = "CWD_cur_len"
-        metric_label = "CWD current (hari)"
-
+        metric_col, metric_label = "CWD_cur_len", "CWD current (hari)"
 
     # -----------------------------
-    # Prepare colors for Scatter
+    # Prepare colors
     # -----------------------------
     if metric_col == "qc_flag":
         plot_df["__color__"] = plot_df["qc_flag"].apply(qc_to_rgb)
     else:
-        # make sure numeric
         plot_df[metric_col] = pd.to_numeric(plot_df.get(metric_col), errors="coerce")
         vmin, vmax = plot_df[metric_col].min(skipna=True), plot_df[metric_col].max(skipna=True)
         plot_df["__color__"] = plot_df[metric_col].apply(lambda v: value_to_rgb(v, vmin, vmax))
 
     # -----------------------------
-    # Render Legend (right column)
+    # Render legend
     # -----------------------------
     if metric_col == "qc_flag":
         render_qc_legend(right)
@@ -1705,7 +1937,7 @@ background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
         render_continuous_legend(right, plot_df[metric_col], metric_label)
 
     # -----------------------------
-    # Tooltip (hover)
+    # Tooltip
     # -----------------------------
     tooltip_html = (
         "<b>{station}</b><br/>"
@@ -1716,22 +1948,14 @@ background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
     if metric_col is not None:
         tooltip_html += f"{metric_label}: " + "{" + metric_col + "}<br/>"
 
-    tooltip = {
-        "html": tooltip_html,
-        "style": {"backgroundColor": "white", "color": "black"}
-    }
+    tooltip = {"html": tooltip_html, "style": {"backgroundColor": "white", "color": "black"}}
 
     # -----------------------------
     # View state
     # -----------------------------
     center_lat = float(plot_df["lat"].median())
     center_lon = float(plot_df["lon"].median())
-    view_state = pdk.ViewState(
-        latitude=center_lat,
-        longitude=center_lon,
-        zoom=8.2,
-        pitch=0
-    )
+    view_state = pdk.ViewState(latitude=center_lat, longitude=center_lon, zoom=8.2, pitch=0)
 
     # -----------------------------
     # Layers
@@ -1739,22 +1963,22 @@ background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
     layers = []
 
     if mode.startswith("Titik"):
-        layer_scatter = pdk.Layer(
-            "ScatterplotLayer",
-            data=plot_df,
-            get_position=["lon", "lat"],
-            get_fill_color="__color__",
-            get_radius=point_size * 120,
-            pickable=True,
-            auto_highlight=True,
+        layers.append(
+            pdk.Layer(
+                "ScatterplotLayer",
+                data=plot_df,
+                get_position=["lon", "lat"],
+                get_fill_color="__color__",
+                get_radius=point_size * 120,
+                pickable=True,
+                auto_highlight=True,
+            )
         )
-        layers.append(layer_scatter)
-
     else:
         # Heatmap only for numeric layers
         if metric_col == "qc_flag":
             with left:
-                st.warning("Heatmap hanya tersedia untuk layer numerik (bukan QC kategori). Gunakan mode Titik.")
+                st.warning("Heatmap hanya untuk layer numerik. Gunakan mode Titik untuk QC kategori.")
         else:
             hm_df = plot_df.copy()
             hm_df[metric_col] = pd.to_numeric(hm_df[metric_col], errors="coerce")
@@ -1765,22 +1989,23 @@ background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
                     st.warning("Tidak ada nilai numerik untuk dibuat heatmap.")
             else:
                 with left:
-                    hm_intensity = st.slider("Heatmap intensity", 0.5, 5.0, 1.2, 0.1)
-                    hm_radius = st.slider("Heatmap radius (meter)", 5000, 60000, 25000, 1000)
+                    hm_intensity = st.slider("Heatmap intensity", 0.5, 5.0, 1.2, 0.1, key="hm_intensity")
+                    hm_radius = st.slider("Heatmap radius (meter)", 5000, 60000, 25000, 1000, key="hm_radius")
 
-                layer_heat = pdk.Layer(
-                    "HeatmapLayer",
-                    data=hm_df,
-                    get_position=["lon", "lat"],
-                    get_weight=metric_col,
-                    radius=hm_radius,
-                    intensity=hm_intensity,
-                    threshold=0.02
+                layers.append(
+                    pdk.Layer(
+                        "HeatmapLayer",
+                        data=hm_df,
+                        get_position=["lon", "lat"],
+                        get_weight=metric_col,
+                        radius=hm_radius,
+                        intensity=hm_intensity,
+                        threshold=0.02
+                    )
                 )
-                layers.append(layer_heat)
 
     # -----------------------------
-    # Render Map (left column)
+    # Render map
     # -----------------------------
     with left:
         st.pydeck_chart(
@@ -1793,7 +2018,7 @@ background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
         )
 
     # -----------------------------
-    # Tabel ringkasan
+    # Summary table
     # -----------------------------
     st.markdown("### Tabel ringkasan (sesuai layer)")
     cols_show = ["station", "pos_id", "lat", "lon", "elev_m", "qc_flag"]
@@ -1803,133 +2028,128 @@ background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
 
 
 # ============================================================
-# PAGE: Download (FULL REWRITE, SAFE + BACKWARD COMPATIBLE)
+# PAGE: Download (window-aware: das1/das2/das3/monthly)
 # ============================================================
 elif st.session_state["page"] == "Download":
     require_results()
 
-    # safety: if schema changed, force user to re-run
-    if st.session_state.get("outputs") is None or st.session_state.get("derived") is None or st.session_state.get("meta") is None:
-        st.info("Hasil belum ada. Silakan Run dari halaman Input.")
+    # results may be in "derived['windows']" (new) or legacy single-window (old)
+    meta = st.session_state.get("meta", {}) or {}
+
+    st.subheader("Download")
+
+    # ---------- Window selector ----------
+    window_selector_ui()
+    bundle = get_active_bundle()
+    if bundle is None:
+        st.info("Bundle window tidak ditemukan. Silakan Run ulang di halaman Input.")
         st.stop()
 
-    outputs = st.session_state["outputs"]
-    meta = st.session_state["meta"]
-    derived = st.session_state["derived"]
+    win_label = str(bundle.get("label", "Window"))
+    start_day = int(bundle.get("start_day", 1))
+    end_day = int(bundle.get("end_day", start_day))
 
-    MONTH_STR = str(meta.get("MONTH_STR", "UNKNOWN"))
-    das_n = int(meta.get("das_n", 0))
+    # ---------- Pull outputs from active window ----------
+    outputs = bundle.get("outputs", {}) or {}
+    station_dash = bundle.get("station_dash", pd.DataFrame())
+    day_dash = bundle.get("day_dash", pd.DataFrame())
+    cdd_cwd_df = bundle.get("cdd_cwd_df", pd.DataFrame())
 
-    # -------------------------
-    # Core outputs (must exist)
-    # -------------------------
+    # ---------- Core outputs (must exist) ----------
     wide_bmkg_out = outputs.get("wide_bmkg_out")
     wide_num_out = outputs.get("wide_num_out")
-
     if wide_bmkg_out is None or wide_num_out is None:
-        st.warning("Output utama tidak ditemukan. Silakan Run ulang di halaman Input.")
+        st.warning("Output utama tidak ditemukan pada window ini. Silakan Run ulang di halaman Input.")
         st.stop()
 
-    # -------------------------
-    # QC outputs (safe defaults)
-    # -------------------------
+    # ---------- QC outputs (safe defaults) ----------
     qc_station = outputs.get("qc_station", pd.DataFrame())
     qc_day = outputs.get("qc_day", pd.DataFrame())
     qc_gap = outputs.get("qc_gap", pd.DataFrame())
     qc_empty_last_day = outputs.get("qc_empty_last_day", pd.DataFrame())
 
-    # compatibility for old vs new naming
-    qc_unmapped = outputs.get("qc_unmapped", outputs.get("qc_mapped_not_in_header", pd.DataFrame()))
+    qc_duplicates = outputs.get("qc_duplicates", pd.DataFrame())
+    qc_unknown_names = outputs.get("qc_unknown_names", pd.DataFrame())
+    qc_mapped_not_in_header = outputs.get("qc_mapped_not_in_header", pd.DataFrame())
 
-    # -------------------------
-    # Derived summaries (safe defaults)
-    # -------------------------
-    station_dash = derived.get("station_dash", pd.DataFrame())
-    day_dash = derived.get("day_dash", pd.DataFrame())
-    cdd_cwd_df = derived.get("cdd_cwd_df", pd.DataFrame())
+    # compatibility alias (old name)
+    qc_unmapped = outputs.get("qc_unmapped", qc_mapped_not_in_header)
 
-    # -------------------------
-    # Warn if some sections missing (do not crash)
-    # -------------------------
-    missing = []
-    for k in ["qc_station", "qc_day", "qc_gap", "qc_empty_last_day"]:
-        if k not in outputs:
-            missing.append(k)
-    if ("qc_unmapped" not in outputs) and ("qc_mapped_not_in_header" not in outputs):
-        missing.append("qc_unmapped (or qc_mapped_not_in_header)")
-    for k in ["station_dash", "day_dash", "cdd_cwd_df"]:
-        if k not in derived:
-            missing.append(f"derived:{k}")
-
-    if missing:
-        st.warning(
-            "Beberapa output belum tersedia (mungkin karena perubahan kode). "
-            "Silakan Run ulang di halaman Input bila perlu.\n\n"
-            f"Missing: {missing}"
-        )
-
-    # -------------------------
-    # Coords
-    # -------------------------
+    # ---------- Coords ----------
     coords_final = st.session_state.get("coords_final")
-    if coords_final is None:
-        coords_final = pd.DataFrame()
-    else:
-        coords_final = coords_final.copy()
+    coords_final = coords_final.copy() if isinstance(coords_final, pd.DataFrame) else pd.DataFrame()
 
-    # -------------------------
-    # Filenames
-    # -------------------------
-    summary_station_name = f"SUMMARY_station_rain_{MONTH_STR}_das{das_n}.csv"
-    summary_day_name = f"SUMMARY_day_rain_{MONTH_STR}_das{das_n}.csv"
-    summary_cdd_cwd_name = f"SUMMARY_CDD_CWD_CHmax_{MONTH_STR}_das{das_n}.csv"
+    # ---------- File prefix ----------
+    MONTH_STR = str(meta.get("MONTH_STR", "UNKNOWN"))
+    # stable key for filenames
+    view_key = str(st.session_state.get("view_window", "window")).lower()  # e.g. das1/das2/das3/monthly
+
+    st.caption(f"Window aktif: **{win_label}** (TGL {start_day}–{end_day}) | Periode: **{MONTH_STR}**")
+
+    # ---------- Filenames ----------
+    fname_bmkg = f"rain_horizontal_{MONTH_STR}_{view_key}_format_bmkg.csv"
+    fname_num = f"rain_horizontal_{MONTH_STR}_{view_key}_numeric.csv"
+
+    fname_qc_station = f"QC_station_completeness_{MONTH_STR}_{view_key}.csv"
+    fname_qc_day = f"QC_day_completeness_{MONTH_STR}_{view_key}.csv"
+    fname_qc_unmapped = f"QC_unmapped_names_{MONTH_STR}_{view_key}.csv"
+    fname_qc_gap = f"QC_station_empty_gap_{MONTH_STR}_{view_key}.csv"
+    fname_qc_empty_last = f"QC_empty_last_day_{MONTH_STR}_{view_key}.csv"
+
+    fname_qc_duplicates = f"QC_duplicates_station_day_{MONTH_STR}_{view_key}.csv"
+    fname_qc_unknown = f"QC_unknown_raw_names_{MONTH_STR}_{view_key}.csv"
+
+    summary_station_name = f"SUMMARY_station_rain_{MONTH_STR}_{view_key}.csv"
+    summary_day_name = f"SUMMARY_day_rain_{MONTH_STR}_{view_key}.csv"
+    summary_cdd_cwd_name = f"SUMMARY_CDD_CWD_CHmax_{MONTH_STR}_{view_key}.csv"
+
     coords_name = "STATION_COORDS_MAPPED.csv"
 
-    st.subheader("Download")
-
-    # -------------------------
-    # Choices
-    # -------------------------
-    fname_bmkg = f"rain_horizontal_{MONTH_STR}_das{das_n}_format_bmkg.csv"
-    fname_num = f"rain_horizontal_{MONTH_STR}_das{das_n}_numeric.csv"
-    fname_qc_station = f"QC_station_completeness_{MONTH_STR}_das{das_n}.csv"
-    fname_qc_day = f"QC_day_completeness_{MONTH_STR}_das{das_n}.csv"
-    fname_qc_unmapped = f"QC_unmapped_names_{MONTH_STR}_das{das_n}.csv"
-    fname_qc_gap = f"QC_station_empty_gap_{MONTH_STR}_das{das_n}.csv"
-    fname_qc_empty_last = f"QC_empty_last_day_{MONTH_STR}_das{das_n}.csv"
-
+    # ---------- Choice UI ----------
     download_choice = st.selectbox(
         "Pilih file yang ingin di-download",
         [
             fname_bmkg,
             fname_num,
+            "— QC —",
             fname_qc_station,
             fname_qc_day,
             fname_qc_unmapped,
             fname_qc_gap,
             fname_qc_empty_last,
+            fname_qc_duplicates,
+            fname_qc_unknown,
+            "— Ringkasan —",
             summary_station_name,
             summary_day_name,
             summary_cdd_cwd_name,
+            "— Referensi —",
             coords_name,
         ],
         index=0
     )
 
-    # -------------------------
-    # Map file -> dataframe
-    # -------------------------
+    if str(download_choice).startswith("—"):
+        st.info("Pilih item file (bukan header pemisah).")
+        st.stop()
+
+    # ---------- Map file -> dataframe ----------
     download_map = {
         fname_bmkg: wide_bmkg_out,
         fname_num: wide_num_out,
+
         fname_qc_station: qc_station,
         fname_qc_day: qc_day,
         fname_qc_unmapped: qc_unmapped,
         fname_qc_gap: qc_gap,
         fname_qc_empty_last: qc_empty_last_day,
+        fname_qc_duplicates: qc_duplicates,
+        fname_qc_unknown: qc_unknown_names,
+
         summary_station_name: station_dash,
         summary_day_name: day_dash,
         summary_cdd_cwd_name: cdd_cwd_df,
+
         coords_name: coords_final,
     }
 
@@ -1945,7 +2165,7 @@ elif st.session_state["page"] == "Download":
             st.error("Data tidak bisa dikonversi ke DataFrame untuk di-download.")
             st.stop()
 
-    # If empty, still allow download (it is informative)
+    # ---------- Download ----------
     st.download_button(
         label=f"Download: {download_choice}",
         data=to_csv_bytes(df_dl),
@@ -1953,6 +2173,10 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
+    # Optional: quick preview
+    with st.expander("Preview (10 baris pertama)", expanded=False):
+        st.dataframe(df_dl.head(10), use_container_width=True, height=320)
 
 
 
