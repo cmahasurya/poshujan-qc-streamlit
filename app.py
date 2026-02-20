@@ -773,13 +773,31 @@ with nav_cols[6]:
     if st.button("Download", use_container_width=True):
         goto("Download"); st.rerun()
 with nav_cols[7]:
-    st.write(f"**Halaman aktif:** {st.session_state['page']}")
+    st.write(f"**Halaman aktif:** {st.session_state.get('page', 'Input')}")
 
 st.divider()
 
 # ============================================================
+# Navigation (single-file multi-view)
+# ============================================================
+PAGES = ["Input", "Hasil", "QC", "Tabel", "Grafik", "Peta", "Download"]
+
+# initialize active page (fix KeyError)
+if "page" not in st.session_state:
+    st.session_state["page"] = "Input"
+
+def goto(page: str):
+    # guard against typos
+    if page in PAGES:
+        st.session_state["page"] = page
+    else:
+        st.session_state["page"] = "Input"
+
+# ============================================================
 # PAGE: Input
 # ============================================================
+
+
 if st.session_state["page"] == "Input":
     st.subheader("Input data")
 
@@ -1985,6 +2003,7 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
 
