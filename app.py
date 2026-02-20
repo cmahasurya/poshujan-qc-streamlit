@@ -904,34 +904,61 @@ if st.session_state["page"] == "Input":
         else:
             start_day, end_day = 21, last_day
 
-        # -------------------------
-        # Read files
-        # -------------------------
-        dfs = []
-        bad_files = []
-        for f in up_rain:
+    # -------------------------
+    # Read files (robust + debug)
+    # -------------------------
+    def read_csv_robust(uploaded_file) -> pd.DataFrame:
+        attempts = [
+            (",", "utf-8"),
+            (";", "utf-8"),
+            ("\t", "utf-8"),
+            (",", "utf-8-sig"),
+            (";", "utf-8-sig"),
+            (",", "latin1"),
+            (";", "latin1"),
+            (",", "cp1252"),
+            (";", "cp1252"),
+        ]
+        last_err = None
+        for sep, enc in attempts:
             try:
-                tmp = pd.read_csv(f)
-                tmp["__source_file__"] = f.name
-                dfs.append(tmp)
-            except Exception:
-                bad_files.append(f.name)
-
-        if bad_files:
-            st.warning(f"File gagal dibaca dan diabaikan: {bad_files}")
-        if not dfs:
-            st.error("Tidak ada file curah hujan valid untuk diproses.")
-            st.stop()
-
-        df = pd.concat(dfs, ignore_index=True)
-        required_cols = ["NAME", "DATA TIMESTAMP", "RAINFALL DAY MM"]
-        missing_cols = [c for c in required_cols if c not in df.columns]
-        if missing_cols:
-            st.error(f"Kolom wajib tidak ditemukan: {missing_cols}")
-            st.stop()
-
-        df["DATA TIMESTAMP"] = pd.to_datetime(df["DATA TIMESTAMP"], errors="coerce")
-        df = df[df["DATA TIMESTAMP"].notna()].copy()
+                uploaded_file.seek(0)
+                df_try = pd.read_csv(uploaded_file, sep=sep, encoding=enc, engine="python")
+                # sanity: must have at least 2 columns
+                if df_try.shape[1] >= 2:
+                    return df_try
+            except Exception as e:
+                last_err = e
+        raise last_err if last_err else RuntimeError("Unknown read_csv failure")
+    
+    dfs = []
+    bad_files = []
+    bad_details = []
+    
+    for f in up_rain:
+        try:
+            tmp = read_csv_robust(f)
+            tmp["__source_file__"] = f.name
+            dfs.append(tmp)
+        except Exception as e:
+            bad_files.append(f.name)
+            bad_details.append(f"{f.name}: {type(e).__name__} - {e}")
+    
+    if bad_files:
+        st.warning(f"File gagal dibaca dan diabaikan: {bad_files}")
+        with st.expander("Detail error pembacaan file", expanded=False):
+            st.code("\n".join(bad_details))
+    
+    if not dfs:
+        st.error("Tidak ada file curah hujan valid untuk diproses.")
+        st.stop()
+    
+    df = pd.concat(dfs, ignore_index=True)
+    
+    # Debug cepat: tampilkan kolom yang terbaca
+    with st.expander("Debug: kolom hasil baca", expanded=False):
+        st.write("Kolom:", list(df.columns))
+        st.dataframe(df.head(20), use_container_width=True)
 
         # -------------------------
         # Filter bulan terpilih
@@ -2177,6 +2204,7 @@ elif st.session_state["page"] == "Download":
     # Optional: quick preview
     with st.expander("Preview (10 baris pertama)", expanded=False):
         st.dataframe(df_dl.head(10), use_container_width=True, height=320)
+
 
 
 
