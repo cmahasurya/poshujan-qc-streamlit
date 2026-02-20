@@ -666,17 +666,27 @@ def current_run_ending_at_last(series: pd.Series, condition_func, last_day: int)
 
 
 # ============================================================
+# Navigation (single-file multi-view)  <-- MUST BE ABOVE ALL goto() calls
+# ============================================================
+PAGES = ["Input", "Hasil", "QC", "Tabel", "Grafik", "Peta", "Download"]
+
+st.session_state.setdefault("page", "Input")
+
+def goto(page: str):
+    st.session_state["page"] = page if page in PAGES else "Input"
+
+
+# ============================================================
 # Session state init
 # ============================================================
-if "outputs" not in st.session_state:
-    st.session_state["outputs"] = None
-if "meta" not in st.session_state:
-    st.session_state["meta"] = None
-if "derived" not in st.session_state:
-    st.session_state["derived"] = None
+st.session_state.setdefault("outputs", None)
+st.session_state.setdefault("meta", None)
+st.session_state.setdefault("derived", None)
+
 if "coords_final" not in st.session_state:
     coords_repo = load_coords_from_repo("coords.csv")
     st.session_state["coords_final"] = prepare_station_coordinates(coords_repo)
+
 
 def clear_results():
     st.session_state["outputs"] = None
@@ -684,66 +694,15 @@ def clear_results():
     st.session_state["derived"] = None
     goto("Input")
 
+
 def require_results():
-    if st.session_state.get("outputs") is None or st.session_state.get("meta") is None or st.session_state.get("derived") is None:
+    if (
+        st.session_state.get("outputs") is None
+        or st.session_state.get("meta") is None
+        or st.session_state.get("derived") is None
+    ):
         st.info("Belum ada hasil. Silakan proses data di halaman Input.")
         st.stop()
-def legend_qc_block():
-    # Warna harus konsisten dengan qc_to_rgb
-    items = [
-        ("OK", (30, 160, 60)),
-        ("MISSING_COORD", (180, 180, 180)),
-        ("OUT_OF_BOUNDS", (255, 140, 0)),
-        ("DUP_LATLON", (220, 60, 60)),
-    ]
-    st.markdown("**Legend (QC)**")
-    for label, (r, g, b) in items:
-        st.markdown(
-            f"""
-<div style="display:flex;align-items:center;margin-bottom:6px;">
-  <div style="width:14px;height:14px;background:rgb({r},{g},{b});border:1px solid #999;margin-right:8px;"></div>
-  <div style="font-size:13px;">{label}</div>
-</div>
-""",
-            unsafe_allow_html=True
-        )
-
-def legend_continuous_block(series: pd.Series, title: str):
-    s = pd.to_numeric(series, errors="coerce")
-    s = s[np.isfinite(s)]
-    st.markdown(f"**Legend ({title})**")
-
-    if s.empty:
-        st.caption("Tidak ada nilai untuk dibuat legend.")
-        return
-
-    q0 = float(np.nanmin(s))
-    q25 = float(np.nanpercentile(s, 25))
-    q50 = float(np.nanpercentile(s, 50))
-    q75 = float(np.nanpercentile(s, 75))
-    q100 = float(np.nanmax(s))
-
-    # Bar sederhana (low -> high)
-    st.markdown(
-        """
-<div style="height:12px;border-radius:6px;border:1px solid #bbb;
-background: linear-gradient(90deg, rgb(60,80,220), rgb(240,80,40));">
-</div>
-""",
-        unsafe_allow_html=True
-    )
-
-    st.write(
-        pd.DataFrame(
-            {
-                "min": [q0],
-                "p25": [q25],
-                "median": [q50],
-                "p75": [q75],
-                "max": [q100],
-            }
-        )
-    )
 
 
 # ============================================================
@@ -776,22 +735,6 @@ with nav_cols[7]:
     st.write(f"**Halaman aktif:** {st.session_state.get('page', 'Input')}")
 
 st.divider()
-
-# ============================================================
-# Navigation (single-file multi-view)
-# ============================================================
-PAGES = ["Input", "Hasil", "QC", "Tabel", "Grafik", "Peta", "Download"]
-
-# initialize active page (fix KeyError)
-if "page" not in st.session_state:
-    st.session_state["page"] = "Input"
-
-def goto(page: str):
-    # guard against typos
-    if page in PAGES:
-        st.session_state["page"] = page
-    else:
-        st.session_state["page"] = "Input"
 
 # ============================================================
 # PAGE: Input
@@ -2003,6 +1946,7 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
 
