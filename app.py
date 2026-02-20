@@ -383,6 +383,13 @@ def join_names(names, max_show=8):
     if len(names) <= max_show:
         return ", ".join(names)
     return ", ".join(names[:max_show]) + f" (+{len(names)-max_show} lagi)"
+    
+def to_csv_bytes(df: pd.DataFrame) -> bytes:
+    """Convert DataFrame to UTF-8 CSV bytes (Excel-friendly)."""
+    if df is None:
+        df = pd.DataFrame()
+    # utf-8-sig adds BOM so Excel reads it nicely
+    return df.to_csv(index=False).encode("utf-8-sig")
 
 def fmt_station_list(df, col_station="station", col_val=None, col_tgl=None):
     # return (names_str, detail_str)
@@ -1946,6 +1953,7 @@ elif st.session_state["page"] == "Download":
         mime="text/csv",
         use_container_width=True
     )
+
 
 
 
