@@ -1093,6 +1093,29 @@ elif st.session_state["page"] == "Hasil":
     hi = bundle.get("hi", {})
     cdd_cwd_df = bundle.get("cdd_cwd_df", pd.DataFrame())
 
+    # -------------------------
+    # Top 15 indeks terpanjang (sekunder) - define variables to avoid NameError
+    # -------------------------
+    top_cdd = pd.DataFrame()
+    top_cwd = pd.DataFrame()
+    
+    if isinstance(cdd_cwd_df, pd.DataFrame) and (not cdd_cwd_df.empty):
+        tmp_idx = cdd_cwd_df.copy()
+    
+        if "CDD_len" in tmp_idx.columns:
+            tmp_idx["CDD_len"] = pd.to_numeric(tmp_idx["CDD_len"], errors="coerce").fillna(0).astype(int)
+            top_cdd = (
+                tmp_idx.sort_values(["CDD_len", "station"], ascending=[False, True])
+                      .head(15)
+            )
+    
+        if "CWD_len" in tmp_idx.columns:
+            tmp_idx["CWD_len"] = pd.to_numeric(tmp_idx["CWD_len"], errors="coerce").fillna(0).astype(int)
+            top_cwd = (
+                tmp_idx.sort_values(["CWD_len", "station"], ascending=[False, True])
+                      .head(15)
+            )
+    
     st.subheader("Hasil")
     st.write(f"Periode: **{MONTH_STR}** | Tampilan: **{bundle['label']}** | Rentang analisis: **TGL {start_day}–{end_day}**")
     st.write(f"Threshold CWD dan hari hujan: **{rainy_thr} mm** | Threshold hujan lebat: **{heavy_thr} mm**")
@@ -2179,6 +2202,7 @@ elif st.session_state["page"] == "Download":
     # Optional: quick preview
     with st.expander("Preview (10 baris pertama)", expanded=False):
         st.dataframe(df_dl.head(10), use_container_width=True, height=320)
+
 
 
 
