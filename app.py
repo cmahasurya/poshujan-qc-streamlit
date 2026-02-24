@@ -1066,102 +1066,111 @@ if st.session_state["page"] == "Input":
         st.rerun()
 
 # ============================================================
-# PAGE: Hasil
+# PAGE: Hasil  (FULL REWRITE: window-aware + safe + backward compatible)
 # ============================================================
 elif st.session_state["page"] == "Hasil":
     require_results()
 
-    meta = st.session_state["meta"]
+    meta = st.session_state.get("meta", {}) or {}
 
-    sel_key = window_selector_ui()
+    # Window selector + active bundle
+    window_selector_ui()
     bundle = get_active_bundle()
     if bundle is None:
         st.info("Window belum tersedia. Silakan Run ulang.")
         st.stop()
 
-    MONTH_STR = meta["MONTH_STR"]
-    last_day = int(meta["last_day"])
-    rainy_thr = float(meta["rainy_thr"])
-    heavy_thr = float(meta["heavy_thr"])
+    # Meta
+    MONTH_STR = str(meta.get("MONTH_STR", "UNKNOWN"))
+    last_day = int(meta.get("last_day", 0) or 0)
+    rainy_thr = float(meta.get("rainy_thr", 1.0))
+    heavy_thr = float(meta.get("heavy_thr", 20.0))
 
-    start_day = int(bundle["start_day"])
-    end_day = int(bundle["end_day"])
+    # Window
+    win_label = str(bundle.get("label", "Window"))
+    start_day = int(bundle.get("start_day", 1))
+    end_day = int(bundle.get("end_day", start_day))
 
-    outputs = bundle["outputs"]
+    # Payloads (safe defaults)
+    outputs = bundle.get("outputs", {}) or {}
     station_dash = bundle.get("station_dash", pd.DataFrame())
     day_dash = bundle.get("day_dash", pd.DataFrame())
-    hi = bundle.get("hi", {})
+    hi = bundle.get("hi", {}) or {}
     cdd_cwd_df = bundle.get("cdd_cwd_df", pd.DataFrame())
 
-    
+    # -------------------------
+    # Header
+    # -------------------------
     st.subheader("Hasil")
-    st.write(f"Periode: **{MONTH_STR}** | Tampilan: **{bundle['label']}** | Rentang analisis: **TGL {start_day}–{end_day}**")
-    st.write(f"Threshold CWD dan hari hujan: **{rainy_thr} mm** | Threshold hujan lebat: **{heavy_thr} mm**")
+    st.write(
+        f"Periode: **{MONTH_STR}** | Tampilan: **{win_label}** | Rentang analisis: **TGL {start_day}–{end_day}**"
+    )
+    st.write(
+        f"Threshold CWD dan hari hujan: **{rainy_thr} mm** | Threshold hujan lebat: **{heavy_thr} mm**"
+    )
+
+    # -------------------------
+    # Helpers (local to this page)
+    # -------------------------
+    def _num(s):
+        return pd.to_numeric(s, errors="coerce")
+
+    def _safe_df(x):
+        return x if isinstance(x, pd.DataFrame) else pd.DataFrame()
+
+    station_dash = _safe_df(station_dash)
+    day_dash = _safe_df(day_dash)
+    cdd_cwd_df = _safe_df(cdd_cwd_df)
 
     # ============================================================
-    # A) CURRENT RUN highlights (ending at last day) (tie safe)
+    # A) CURRENT RUN highlights (ending at end_day) (tie safe)
     # ============================================================
-    cdd_cur_best_len = 0
-    cdd_cur_names = ""
-    cdd_cur_start_min = None
-    cdd_cur_end = None
+    cdd_cur_best_len, cdd_cur_names, cdd_cur_start_min, cdd_cur_end = 0, "", None, None
+    cwd_cur_best_len, cwd_cur_names, cwd_cur_start_min, cwd_cur_end = 0, "", None, None
 
-    cwd_cur_best_len = 0
-    cwd_cur_names = ""
-    cwd_cur_start_min = None
-    cwd_cur_end = None
-
-    if isinstance(cdd_cwd_df, pd.DataFrame) and (not cdd_cwd_df.empty):
+    if not cdd_cwd_df.empty:
         tmp_all = cdd_cwd_df.copy()
 
         # CDD current
         if "CDD_cur_len" in tmp_all.columns:
             tmp = tmp_all.copy()
-            tmp["CDD_cur_len"] = pd.to_numeric(tmp["CDD_cur_len"], errors="coerce").fillna(0).astype(int)
+            tmp["CDD_cur_len"] = _num(tmp["CDD_cur_len"]).fillna(0).astype(int)
             best_len = int(tmp["CDD_cur_len"].max()) if len(tmp) else 0
             if best_len > 0:
                 best = tmp[tmp["CDD_cur_len"] == best_len].copy().sort_values("station")
                 cdd_cur_best_len = best_len
                 cdd_cur_names = join_names(best["station"].tolist())
-                if "CDD_cur_start" in best.columns and "CDD_cur_end" in best.columns:
-                    starts = pd.to_numeric(best["CDD_cur_start"], errors="coerce")
-                    ends = pd.to_numeric(best["CDD_cur_end"], errors="coerce")
+                if ("CDD_cur_start" in best.columns) and ("CDD_cur_end" in best.columns):
+                    starts = _num(best["CDD_cur_start"])
+                    ends = _num(best["CDD_cur_end"])
                     cdd_cur_start_min = int(np.nanmin(starts)) if starts.notna().any() else None
                     cdd_cur_end = int(np.nanmax(ends)) if ends.notna().any() else end_day
 
         # CWD current
         if "CWD_cur_len" in tmp_all.columns:
             tmp = tmp_all.copy()
-            tmp["CWD_cur_len"] = pd.to_numeric(tmp["CWD_cur_len"], errors="coerce").fillna(0).astype(int)
+            tmp["CWD_cur_len"] = _num(tmp["CWD_cur_len"]).fillna(0).astype(int)
             best_len = int(tmp["CWD_cur_len"].max()) if len(tmp) else 0
             if best_len > 0:
                 best = tmp[tmp["CWD_cur_len"] == best_len].copy().sort_values("station")
                 cwd_cur_best_len = best_len
                 cwd_cur_names = join_names(best["station"].tolist())
-                if "CWD_cur_start" in best.columns and "CWD_cur_end" in best.columns:
-                    starts = pd.to_numeric(best["CWD_cur_start"], errors="coerce")
-                    ends = pd.to_numeric(best["CWD_cur_end"], errors="coerce")
+                if ("CWD_cur_start" in best.columns) and ("CWD_cur_end" in best.columns):
+                    starts = _num(best["CWD_cur_start"])
+                    ends = _num(best["CWD_cur_end"])
                     cwd_cur_start_min = int(np.nanmin(starts)) if starts.notna().any() else None
                     cwd_cur_end = int(np.nanmax(ends)) if ends.notna().any() else end_day
 
     # ============================================================
-    # B) Wettest + driest station accumulation in the dasarian (tie safe)
+    # B) Wettest + driest station accumulation in window (tie safe)
     # ============================================================
-    wet_total = np.nan
-    wet_names = ""
-    wet_n = 0
+    wet_total, wet_names, wet_n = np.nan, "", 0
+    dry_total, dry_names, dry_n = np.nan, "", 0
+    ch_min_wet_val, ch_min_wet_names, ch_min_wet_n = np.nan, "", 0
 
-    dry_total = np.nan
-    dry_names = ""
-    dry_n = 0
-
-    ch_min_wet_val = np.nan
-    ch_min_wet_names = ""
-    ch_min_wet_n = 0
-
-    if isinstance(station_dash, pd.DataFrame) and (not station_dash.empty) and ("total_mm" in station_dash.columns):
+    if (not station_dash.empty) and ("total_mm" in station_dash.columns):
         sd = station_dash.copy()
-        sd["total_mm"] = pd.to_numeric(sd["total_mm"], errors="coerce")
+        sd["total_mm"] = _num(sd["total_mm"])
         sd2 = sd[np.isfinite(sd["total_mm"])].copy()
 
         if not sd2.empty:
@@ -1187,20 +1196,20 @@ elif st.session_state["page"] == "Hasil":
     # ============================================================
     # C) CH max (daily maximum inside window) (tie safe, show TGL)
     # ============================================================
-    ch_max_val = np.nan
-    ch_max_names = ""
-    ch_max_detail = ""
+    ch_max_val, ch_max_names, ch_max_detail = np.nan, "", ""
 
-    if isinstance(cdd_cwd_df, pd.DataFrame) and (not cdd_cwd_df.empty) and ("CH_max_mm" in cdd_cwd_df.columns):
+    if (not cdd_cwd_df.empty) and ("CH_max_mm" in cdd_cwd_df.columns):
         tmp = cdd_cwd_df.copy()
-        tmp["CH_max_mm"] = pd.to_numeric(tmp["CH_max_mm"], errors="coerce")
+        tmp["CH_max_mm"] = _num(tmp["CH_max_mm"])
         if tmp["CH_max_mm"].notna().any():
             ch_max_val = float(tmp["CH_max_mm"].max())
             top = tmp[tmp["CH_max_mm"] == ch_max_val].copy().sort_values("station")
-            ch_max_names, ch_max_detail = fmt_station_list(top, col_station="station", col_val="CH_max_mm", col_tgl="CH_max_TGL")
+            ch_max_names, ch_max_detail = fmt_station_list(
+                top, col_station="station", col_val="CH_max_mm", col_tgl="CH_max_TGL"
+            )
 
     # ============================================================
-    # Render grouped metrics
+    # Render grouped metrics (Basah vs Kering)
     # ============================================================
     basah_col, kering_col = st.columns(2)
 
@@ -1217,9 +1226,7 @@ elif st.session_state["page"] == "Hasil":
             b1.metric("CWD current terpanjang", "-")
 
         if np.isfinite(wet_total) and wet_names:
-            label = "Akumulasi CH tertinggi"
-            if wet_n > 1:
-                label = f"Akumulasi CH tertinggi ({wet_n} pos)"
+            label = "Akumulasi CH tertinggi" if wet_n <= 1 else f"Akumulasi CH tertinggi ({wet_n} pos)"
             b2.metric(label, wet_names, f"{wet_total:.1f} mm")
         else:
             b2.metric("Akumulasi CH tertinggi", "-")
@@ -1229,16 +1236,21 @@ elif st.session_state["page"] == "Hasil":
         else:
             b3.metric("CH maksimum (harian)", "-")
 
-        with st.expander("Detail Basah"):
-            st.markdown(f"Akumulasi CH dihitung sebagai jumlah curah hujan harian pada rentang **TGL {start_day}–{end_day}** untuk setiap pos.")
-            st.markdown("#### Akumulasi CH tertinggi (dasarian)")
-            if isinstance(station_dash, pd.DataFrame) and (not station_dash.empty):
+        with st.expander("Detail Basah", expanded=False):
+            st.markdown(
+                f"Akumulasi CH = jumlah curah hujan harian pada rentang **TGL {start_day}–{end_day}** untuk setiap pos."
+            )
+
+            st.markdown("#### Akumulasi CH tertinggi (window)")
+            if not station_dash.empty:
                 cols_rank = [c for c in ["station", "total_mm", "valid_days", "max_mm", "tgl_max"] if c in station_dash.columns]
                 st.dataframe(
                     station_dash.sort_values(["total_mm", "station"], ascending=[False, True])[cols_rank].head(30),
                     use_container_width=True,
                     height=520
                 )
+            else:
+                st.write("Ringkasan pos belum tersedia.")
 
             st.markdown("---")
             st.markdown("#### CH maksimum harian (tie safe)")
@@ -1250,9 +1262,9 @@ elif st.session_state["page"] == "Hasil":
 
             st.markdown("---")
             st.markdown(f"#### CWD current (run harus berakhir di TGL {end_day})")
-            if isinstance(cdd_cwd_df, pd.DataFrame) and (not cdd_cwd_df.empty) and ("CWD_cur_len" in cdd_cwd_df.columns):
+            if (not cdd_cwd_df.empty) and ("CWD_cur_len" in cdd_cwd_df.columns):
                 tmp = cdd_cwd_df.copy()
-                tmp["CWD_cur_len"] = pd.to_numeric(tmp["CWD_cur_len"], errors="coerce").fillna(0).astype(int)
+                tmp["CWD_cur_len"] = _num(tmp["CWD_cur_len"]).fillna(0).astype(int)
                 best_len = int(tmp["CWD_cur_len"].max()) if len(tmp) else 0
                 if best_len > 0:
                     best = tmp[tmp["CWD_cur_len"] == best_len].copy().sort_values("station")
@@ -1260,6 +1272,8 @@ elif st.session_state["page"] == "Hasil":
                     st.dataframe(best[cols3], use_container_width=True, height=360)
                 else:
                     st.write("Tidak ada CWD current (len > 0) pada hari terakhir.")
+            else:
+                st.write("Kolom CWD_cur_len tidak tersedia.")
 
     with kering_col:
         st.markdown("### Kering")
@@ -1274,27 +1288,25 @@ elif st.session_state["page"] == "Hasil":
             k1.metric("CDD current terpanjang", "-")
 
         if np.isfinite(dry_total) and dry_names:
-            label = "Akumulasi CH terendah"
-            if dry_n > 1:
-                label = f"Akumulasi CH terendah ({dry_n} pos)"
+            label = "Akumulasi CH terendah" if dry_n <= 1 else f"Akumulasi CH terendah ({dry_n} pos)"
             k2.metric(label, dry_names, f"{dry_total:.1f} mm")
         else:
             k2.metric("Akumulasi CH terendah", "-")
 
         if np.isfinite(ch_min_wet_val) and ch_min_wet_names:
-            label = "CH minimum (ada hujan)"
-            if ch_min_wet_n > 1:
-                label = f"CH minimum (ada hujan) ({ch_min_wet_n} pos)"
+            label = "CH minimum (ada hujan)" if ch_min_wet_n <= 1 else f"CH minimum (ada hujan) ({ch_min_wet_n} pos)"
             k3.metric(label, ch_min_wet_names, f"{ch_min_wet_val:.1f} mm")
         else:
             k3.metric("CH minimum (ada hujan)", "-")
 
-        with st.expander("Detail Kering"):
-            st.markdown(f"Akumulasi CH dihitung sebagai jumlah curah hujan harian pada rentang **TGL {start_day}–{end_day}** untuk setiap pos.")
+        with st.expander("Detail Kering", expanded=False):
+            st.markdown(
+                f"Akumulasi CH = jumlah curah hujan harian pada rentang **TGL {start_day}–{end_day}** untuk setiap pos."
+            )
             st.markdown(f"#### CDD current (run harus berakhir di TGL {end_day})")
-            if isinstance(cdd_cwd_df, pd.DataFrame) and (not cdd_cwd_df.empty) and ("CDD_cur_len" in cdd_cwd_df.columns):
+            if (not cdd_cwd_df.empty) and ("CDD_cur_len" in cdd_cwd_df.columns):
                 tmp = cdd_cwd_df.copy()
-                tmp["CDD_cur_len"] = pd.to_numeric(tmp["CDD_cur_len"], errors="coerce").fillna(0).astype(int)
+                tmp["CDD_cur_len"] = _num(tmp["CDD_cur_len"]).fillna(0).astype(int)
                 best_len = int(tmp["CDD_cur_len"].max()) if len(tmp) else 0
                 if best_len > 0:
                     best = tmp[tmp["CDD_cur_len"] == best_len].copy().sort_values("station")
@@ -1302,14 +1314,16 @@ elif st.session_state["page"] == "Hasil":
                     st.dataframe(best[cols], use_container_width=True, height=360)
                 else:
                     st.write("Tidak ada CDD current (len > 0) pada hari terakhir.")
+            else:
+                st.write("Kolom CDD_cur_len tidak tersedia.")
 
     st.caption("Jika nilai sama, semua nama pos ditampilkan (dipotong bila terlalu panjang).")
 
     # ============================================================
-    # Ringkasan agregat (dasarian)
+    # Ringkasan agregat (window)
     # ============================================================
     st.markdown("---")
-    st.subheader("Ringkasan dasarian (agregat)")
+    st.subheader("Ringkasan (agregat)")
 
     m1, m2, m3, m4 = st.columns(4)
     if isinstance(hi, dict) and hi:
@@ -1318,10 +1332,18 @@ elif st.session_state["page"] == "Hasil":
         m1.metric("Total hujan (mm) semua pos", f"{float(v_total):.1f}" if np.isfinite(v_total) else "-")
         m2.metric("Coverage numeric (%)", f"{float(v_cov):.2f}" if np.isfinite(v_cov) else "-")
 
-        ws = hi.get("wettest_station", {})
-        wd = hi.get("wettest_day", {})
-        m3.metric("Pos terbasah (akumulasi)", ws.get("station", "-"), f"{float(ws.get('total_mm', 0)):.1f} mm" if ws else "-")
-        m4.metric("Hari terbasah (akumulasi)", f"TGL {int(wd.get('TGL', end_day))}" if wd else "-", f"{float(wd.get('total_mm_all_stations', 0)):.1f} mm" if wd else "-")
+        ws = hi.get("wettest_station", {}) or {}
+        wd = hi.get("wettest_day", {}) or {}
+        m3.metric(
+            "Pos terbasah (akumulasi)",
+            ws.get("station", "-"),
+            f"{float(ws.get('total_mm', np.nan)):.1f} mm" if ws else "-"
+        )
+        m4.metric(
+            "Hari terbasah (akumulasi)",
+            f"TGL {int(wd.get('TGL', end_day))}" if ("TGL" in wd and pd.notna(wd.get("TGL"))) else "-",
+            f"{float(wd.get('total_mm_all_stations', np.nan)):.1f} mm" if wd else "-"
+        )
     else:
         m1.metric("Total hujan (mm) semua pos", "-")
         m2.metric("Coverage numeric (%)", "-")
@@ -1329,20 +1351,29 @@ elif st.session_state["page"] == "Hasil":
         m4.metric("Hari terbasah (akumulasi)", "-")
 
     # ============================================================
-    # Kondisi terkini (top 15)
+    # Kondisi terkini (Top 15)
     # ============================================================
     st.markdown("---")
     st.subheader("Kondisi terkini (run harus berakhir pada hari terakhir window)")
 
-    if isinstance(cdd_cwd_df, pd.DataFrame) and (not cdd_cwd_df.empty):
+    if not cdd_cwd_df.empty:
         tmp_cur = cdd_cwd_df.copy()
 
-        tmp_cdd_cur = tmp_cur[pd.to_numeric(tmp_cur.get("CDD_cur_len", 0), errors="coerce").fillna(0) > 0].sort_values(
-            ["CDD_cur_len", "station"], ascending=[False, True]
-        ).head(15)
-        tmp_cwd_cur = tmp_cur[pd.to_numeric(tmp_cur.get("CWD_cur_len", 0), errors="coerce").fillna(0) > 0].sort_values(
-            ["CWD_cur_len", "station"], ascending=[False, True]
-        ).head(15)
+        tmp_cur["CDD_cur_len"] = _num(tmp_cur.get("CDD_cur_len", 0)).fillna(0).astype(int)
+        tmp_cur["CWD_cur_len"] = _num(tmp_cur.get("CWD_cur_len", 0)).fillna(0).astype(int)
+
+        tmp_cdd_cur = (
+            tmp_cur[tmp_cur["CDD_cur_len"] > 0]
+            .sort_values(["CDD_cur_len", "station"], ascending=[False, True])
+            .head(15)
+            .copy()
+        )
+        tmp_cwd_cur = (
+            tmp_cur[tmp_cur["CWD_cur_len"] > 0]
+            .sort_values(["CWD_cur_len", "station"], ascending=[False, True])
+            .head(15)
+            .copy()
+        )
 
         x1, x2 = st.columns(2)
         with x1:
@@ -1358,38 +1389,67 @@ elif st.session_state["page"] == "Hasil":
         st.info("Tabel CDD/CWD belum tersedia. Silakan Run dari halaman Input.")
 
     # ============================================================
-    # Grafik ringkas (dasarian)
+    # Grafik ringkas (window)
     # ============================================================
     st.markdown("---")
     gL, gR = st.columns([1.1, 0.9])
+
     with gL:
-        if isinstance(day_dash, pd.DataFrame) and (not day_dash.empty) and ("TGL" in day_dash.columns):
+        if (not day_dash.empty) and ("TGL" in day_dash.columns):
             st.subheader("Total hujan harian (semua pos)")
-            st.line_chart(day_dash[["TGL", "total_mm_all_stations"]].set_index("TGL"))
+            if "total_mm_all_stations" in day_dash.columns:
+                st.line_chart(day_dash[["TGL", "total_mm_all_stations"]].set_index("TGL"))
+            else:
+                st.caption("Kolom total_mm_all_stations tidak tersedia pada day_dash.")
 
             st.subheader("Jumlah pos hujan per hari")
             if "stations_rainy_ge_thr" in day_dash.columns:
                 st.line_chart(day_dash[["TGL", "stations_rainy_ge_thr"]].set_index("TGL"))
+            else:
+                st.caption("Kolom stations_rainy_ge_thr tidak tersedia pada day_dash.")
         else:
             st.info("Ringkasan harian belum tersedia.")
 
     with gR:
-        st.subheader("Top 15 pos berdasarkan akumulasi dasarian")
-        if isinstance(station_dash, pd.DataFrame) and (not station_dash.empty):
+        st.subheader("Top 15 pos berdasarkan akumulasi window")
+        if not station_dash.empty:
             st.dataframe(station_dash.head(15), use_container_width=True, height=520)
         else:
             st.info("Ringkasan pos belum tersedia.")
 
     # ============================================================
-    # Indeks terpanjang (sekunder)
+    # Indeks terpanjang (sekunder)  <-- FIXED: define top_cdd/top_cwd
     # ============================================================
     st.markdown("---")
     st.subheader("Indeks terpanjang (sekunder)")
 
+    top_cdd = pd.DataFrame()
+    top_cwd = pd.DataFrame()
+
+    if not cdd_cwd_df.empty:
+        tmp = cdd_cwd_df.copy()
+        if "CDD_len" in tmp.columns:
+            tmp["CDD_len"] = _num(tmp["CDD_len"])
+            top_cdd = (
+                tmp[tmp["CDD_len"].notna()]
+                .sort_values(["CDD_len", "station"], ascending=[False, True])
+                .head(15)
+                .copy()
+            )
+        if "CWD_len" in tmp.columns:
+            tmp["CWD_len"] = _num(tmp["CWD_len"])
+            top_cwd = (
+                tmp[tmp["CWD_len"].notna()]
+                .sort_values(["CWD_len", "station"], ascending=[False, True])
+                .head(15)
+                .copy()
+            )
+
     d1, d2 = st.columns(2)
+
     with d1:
         st.caption("Top 15 CDD terpanjang (per pos)")
-        if isinstance(top_cdd, pd.DataFrame) and (not top_cdd.empty):
+        if not top_cdd.empty:
             cols = [c for c in ["station", "CDD_len", "CDD_start", "CDD_end", "CH_max_mm", "CH_max_TGL"] if c in top_cdd.columns]
             st.dataframe(top_cdd[cols], use_container_width=True, height=520)
         else:
@@ -1397,14 +1457,14 @@ elif st.session_state["page"] == "Hasil":
 
     with d2:
         st.caption("Top 15 CWD terpanjang (per pos)")
-        if isinstance(top_cwd, pd.DataFrame) and (not top_cwd.empty):
+        if not top_cwd.empty:
             cols = [c for c in ["station", "CWD_len", "CWD_start", "CWD_end", "CH_max_mm", "CH_max_TGL"] if c in top_cwd.columns]
             st.dataframe(top_cwd[cols], use_container_width=True, height=520)
         else:
             st.write("Tidak ada")
 
-    with st.expander("Tabel lengkap CDD/CWD/CHmax (semua pos)"):
-        if isinstance(cdd_cwd_df, pd.DataFrame) and (not cdd_cwd_df.empty):
+    with st.expander("Tabel lengkap CDD/CWD/CHmax (semua pos)", expanded=False):
+        if not cdd_cwd_df.empty:
             st.dataframe(cdd_cwd_df, use_container_width=True, height=520)
         else:
             st.write("Tidak ada")
@@ -1414,44 +1474,40 @@ elif st.session_state["page"] == "Hasil":
     # ============================================================
     st.markdown("---")
     st.subheader("Insight bulanan (sekunder)")
-    
-    # New structure: derived["windows"]["monthly"]
+
     windows = st.session_state.get("derived", {}).get("windows", {}) or {}
     monthly_bundle = windows.get("monthly")
-    
-    # Fallback (legacy): derived["monthly"] (if you ever used it before)
-    legacy_monthly = st.session_state.get("derived", {}).get("monthly", {})
-    
-    # Pick the best available monthly source
+    legacy_monthly = st.session_state.get("derived", {}).get("monthly", {}) or {}
+
     if monthly_bundle is not None:
         hi_m = monthly_bundle.get("hi", {}) or {}
         station_dash_m = monthly_bundle.get("station_dash", pd.DataFrame())
         day_dash_m = monthly_bundle.get("day_dash", pd.DataFrame())
+        last_day_m = int(st.session_state.get("meta", {}).get("last_day", last_day) or last_day)
     else:
         hi_m = legacy_monthly.get("hi", {}) or {}
         station_dash_m = legacy_monthly.get("station_dash", pd.DataFrame())
         day_dash_m = legacy_monthly.get("day_dash", pd.DataFrame())
-    
-    if (not hi_m) and (not isinstance(station_dash_m, pd.DataFrame) or station_dash_m.empty) and (not isinstance(day_dash_m, pd.DataFrame) or day_dash_m.empty):
+        last_day_m = last_day
+
+    station_dash_m = _safe_df(station_dash_m)
+    day_dash_m = _safe_df(day_dash_m)
+
+    no_monthly = (not hi_m) and station_dash_m.empty and day_dash_m.empty
+    if no_monthly:
         st.info("Insight bulanan belum tersedia. Pastikan window **Bulanan (TGL 1–akhir bulan)** terbentuk saat Run.")
     else:
-        st.write(f"Periode bulanan: **{MONTH_STR}** | Rentang: **TGL 1–{last_day}**")
-    
+        st.write(f"Periode bulanan: **{MONTH_STR}** | Rentang: **TGL 1–{last_day_m}**")
+
         mm1, mm2, mm3, mm4 = st.columns(4)
-    
+
         v_total_m = hi_m.get("total_mm_all_cells", np.nan)
         v_cov_m = hi_m.get("coverage_pct_numeric", np.nan)
         ws_m = hi_m.get("wettest_station", {}) or {}
         wd_m = hi_m.get("wettest_day", {}) or {}
-    
-        mm1.metric(
-            "Total hujan bulanan (mm) semua pos",
-            f"{float(v_total_m):.1f}" if np.isfinite(v_total_m) else "-"
-        )
-        mm2.metric(
-            "Coverage numeric bulanan (%)",
-            f"{float(v_cov_m):.2f}" if np.isfinite(v_cov_m) else "-"
-        )
+
+        mm1.metric("Total hujan bulanan (mm) semua pos", f"{float(v_total_m):.1f}" if np.isfinite(v_total_m) else "-")
+        mm2.metric("Coverage numeric bulanan (%)", f"{float(v_cov_m):.2f}" if np.isfinite(v_cov_m) else "-")
         mm3.metric(
             "Pos terbasah bulanan (akumulasi)",
             ws_m.get("station", "-"),
@@ -1459,30 +1515,21 @@ elif st.session_state["page"] == "Hasil":
         )
         mm4.metric(
             "Hari terbasah bulanan (akumulasi)",
-            f"TGL {int(wd_m.get('TGL', last_day))}" if ("TGL" in wd_m and pd.notna(wd_m.get("TGL"))) else "-",
+            f"TGL {int(wd_m.get('TGL', last_day_m))}" if ("TGL" in wd_m and pd.notna(wd_m.get("TGL"))) else "-",
             f"{float(wd_m.get('total_mm_all_stations', np.nan)):.1f} mm" if wd_m else "-"
         )
-    
+
         with st.expander("Detail insight bulanan", expanded=False):
-            # Station table
-            if isinstance(station_dash_m, pd.DataFrame) and (not station_dash_m.empty):
-                st.dataframe(
-                    station_dash_m.head(30),
-                    use_container_width=True,
-                    height=520
-                )
+            if not station_dash_m.empty:
+                st.dataframe(station_dash_m.head(30), use_container_width=True, height=520)
             else:
                 st.caption("Ringkasan pos bulanan belum tersedia.")
-    
-            # Day chart
-            if isinstance(day_dash_m, pd.DataFrame) and (not day_dash_m.empty) and ("TGL" in day_dash_m.columns):
-                if "total_mm_all_stations" in day_dash_m.columns:
-                    st.line_chart(day_dash_m[["TGL", "total_mm_all_stations"]].set_index("TGL"))
-                else:
-                    st.caption("Kolom total_mm_all_stations tidak ada pada day_dash bulanan.")
-            else:
-                st.caption("Ringkasan harian bulanan belum tersedia.")
 
+            if (not day_dash_m.empty) and ("TGL" in day_dash_m.columns) and ("total_mm_all_stations" in day_dash_m.columns):
+                st.line_chart(day_dash_m[["TGL", "total_mm_all_stations"]].set_index("TGL"))
+            else:
+                st.caption("Ringkasan harian bulanan belum tersedia atau kolom total_mm_all_stations tidak ada.")
+                
 # ============================================================
 # PAGE: QC
 # ============================================================
@@ -2219,6 +2266,7 @@ elif st.session_state["page"] == "Download":
     # Optional: quick preview
     with st.expander("Preview (10 baris pertama)", expanded=False):
         st.dataframe(df_dl.head(10), use_container_width=True, height=320)
+
 
 
 
