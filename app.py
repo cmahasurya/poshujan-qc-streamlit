@@ -1093,28 +1093,6 @@ elif st.session_state["page"] == "Hasil":
     hi = bundle.get("hi", {})
     cdd_cwd_df = bundle.get("cdd_cwd_df", pd.DataFrame())
 
-    # -------------------------
-    # Top 15 indeks terpanjang (sekunder) - define variables to avoid NameError
-    # -------------------------
-    top_cdd = pd.DataFrame()
-    top_cwd = pd.DataFrame()
-    
-    if isinstance(cdd_cwd_df, pd.DataFrame) and (not cdd_cwd_df.empty):
-        tmp_idx = cdd_cwd_df.copy()
-    
-        if "CDD_len" in tmp_idx.columns:
-            tmp_idx["CDD_len"] = pd.to_numeric(tmp_idx["CDD_len"], errors="coerce").fillna(0).astype(int)
-            top_cdd = (
-                tmp_idx.sort_values(["CDD_len", "station"], ascending=[False, True])
-                      .head(15)
-            )
-    
-        if "CWD_len" in tmp_idx.columns:
-            tmp_idx["CWD_len"] = pd.to_numeric(tmp_idx["CWD_len"], errors="coerce").fillna(0).astype(int)
-            top_cwd = (
-                tmp_idx.sort_values(["CWD_len", "station"], ascending=[False, True])
-                      .head(15)
-            )
     
     st.subheader("Hasil")
     st.write(f"Periode: **{MONTH_STR}** | Tampilan: **{bundle['label']}** | Rentang analisis: **TGL {start_day}–{end_day}**")
@@ -1432,39 +1410,78 @@ elif st.session_state["page"] == "Hasil":
             st.write("Tidak ada")
 
     # ============================================================
-    # Insight bulanan (sekunder)
+    # Insight bulanan (sekunder)  [window-aware + backward compatible]
     # ============================================================
     st.markdown("---")
     st.subheader("Insight bulanan (sekunder)")
-
-    monthly = derived.get("monthly", {})
-    if not monthly:
-        st.info("Insight bulanan belum tersedia. Jalankan ulang proses pada halaman Input.")
+    
+    # New structure: derived["windows"]["monthly"]
+    windows = st.session_state.get("derived", {}).get("windows", {}) or {}
+    monthly_bundle = windows.get("monthly")
+    
+    # Fallback (legacy): derived["monthly"] (if you ever used it before)
+    legacy_monthly = st.session_state.get("derived", {}).get("monthly", {})
+    
+    # Pick the best available monthly source
+    if monthly_bundle is not None:
+        hi_m = monthly_bundle.get("hi", {}) or {}
+        station_dash_m = monthly_bundle.get("station_dash", pd.DataFrame())
+        day_dash_m = monthly_bundle.get("day_dash", pd.DataFrame())
     else:
-        hi_m = monthly.get("hi", {})
-        station_dash_m = monthly.get("station_dash", pd.DataFrame())
-        day_dash_m = monthly.get("day_dash", pd.DataFrame())
-
+        hi_m = legacy_monthly.get("hi", {}) or {}
+        station_dash_m = legacy_monthly.get("station_dash", pd.DataFrame())
+        day_dash_m = legacy_monthly.get("day_dash", pd.DataFrame())
+    
+    if (not hi_m) and (not isinstance(station_dash_m, pd.DataFrame) or station_dash_m.empty) and (not isinstance(day_dash_m, pd.DataFrame) or day_dash_m.empty):
+        st.info("Insight bulanan belum tersedia. Pastikan window **Bulanan (TGL 1–akhir bulan)** terbentuk saat Run.")
+    else:
         st.write(f"Periode bulanan: **{MONTH_STR}** | Rentang: **TGL 1–{last_day}**")
-
+    
         mm1, mm2, mm3, mm4 = st.columns(4)
+    
         v_total_m = hi_m.get("total_mm_all_cells", np.nan)
         v_cov_m = hi_m.get("coverage_pct_numeric", np.nan)
-        ws_m = hi_m.get("wettest_station", {})
-        wd_m = hi_m.get("wettest_day", {})
-
-        mm1.metric("Total hujan bulanan (mm) semua pos", f"{float(v_total_m):.1f}" if np.isfinite(v_total_m) else "-")
-        mm2.metric("Coverage numeric bulanan (%)", f"{float(v_cov_m):.2f}" if np.isfinite(v_cov_m) else "-")
-        mm3.metric("Pos terbasah bulanan (akumulasi)", ws_m.get("station", "-"),
-                   f"{float(ws_m.get('total_mm', 0)):.1f} mm" if ws_m else "-")
-        mm4.metric("Hari terbasah bulanan (akumulasi)", f"TGL {int(wd_m.get('TGL', last_day))}" if wd_m else "-",
-                   f"{float(wd_m.get('total_mm_all_stations', 0)):.1f} mm" if wd_m else "-")
-
-        with st.expander("Detail insight bulanan"):
+        ws_m = hi_m.get("wettest_station", {}) or {}
+        wd_m = hi_m.get("wettest_day", {}) or {}
+    
+        mm1.metric(
+            "Total hujan bulanan (mm) semua pos",
+            f"{float(v_total_m):.1f}" if np.isfinite(v_total_m) else "-"
+        )
+        mm2.metric(
+            "Coverage numeric bulanan (%)",
+            f"{float(v_cov_m):.2f}" if np.isfinite(v_cov_m) else "-"
+        )
+        mm3.metric(
+            "Pos terbasah bulanan (akumulasi)",
+            ws_m.get("station", "-"),
+            f"{float(ws_m.get('total_mm', np.nan)):.1f} mm" if ws_m else "-"
+        )
+        mm4.metric(
+            "Hari terbasah bulanan (akumulasi)",
+            f"TGL {int(wd_m.get('TGL', last_day))}" if ("TGL" in wd_m and pd.notna(wd_m.get("TGL"))) else "-",
+            f"{float(wd_m.get('total_mm_all_stations', np.nan)):.1f} mm" if wd_m else "-"
+        )
+    
+        with st.expander("Detail insight bulanan", expanded=False):
+            # Station table
             if isinstance(station_dash_m, pd.DataFrame) and (not station_dash_m.empty):
-                st.dataframe(station_dash_m.head(30), use_container_width=True, height=520)
+                st.dataframe(
+                    station_dash_m.head(30),
+                    use_container_width=True,
+                    height=520
+                )
+            else:
+                st.caption("Ringkasan pos bulanan belum tersedia.")
+    
+            # Day chart
             if isinstance(day_dash_m, pd.DataFrame) and (not day_dash_m.empty) and ("TGL" in day_dash_m.columns):
-                st.line_chart(day_dash_m[["TGL", "total_mm_all_stations"]].set_index("TGL"))
+                if "total_mm_all_stations" in day_dash_m.columns:
+                    st.line_chart(day_dash_m[["TGL", "total_mm_all_stations"]].set_index("TGL"))
+                else:
+                    st.caption("Kolom total_mm_all_stations tidak ada pada day_dash bulanan.")
+            else:
+                st.caption("Ringkasan harian bulanan belum tersedia.")
 
 # ============================================================
 # PAGE: QC
@@ -2202,6 +2219,7 @@ elif st.session_state["page"] == "Download":
     # Optional: quick preview
     with st.expander("Preview (10 baris pertama)", expanded=False):
         st.dataframe(df_dl.head(10), use_container_width=True, height=320)
+
 
 
 
