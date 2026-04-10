@@ -632,56 +632,91 @@ def build_outputs(df_month_full: pd.DataFrame, month_start: int, month_end: int,
     }
     
 def build_dashboard(wide_num_out: pd.DataFrame, rainy_threshold: float, heavy_threshold: float):
+    # Convert to numeric
     num = wide_num_out.drop(columns=["TGL"]).apply(pd.to_numeric, errors="coerce")
+
+    # Create indexed version for idxmax
     num2 = num.copy()
     num2.index = wide_num_out["TGL"].values
 
+    # --- Station-level metrics ---
     station_total = num.sum(axis=0, skipna=True)
     station_valid_days = num.notna().sum(axis=0)
     station_rainy_days = (num >= rainy_threshold).sum(axis=0, skipna=True)
     station_heavy_days = (num >= heavy_threshold).sum(axis=0, skipna=True)
     station_max = num.max(axis=0, skipna=True)
-    station_tgl_max = num2.idxmax(axis=0, skipna=True).astype("Int64")
 
-    station_dash = pd.DataFrame({
-        "station": num.columns,
-        "total_mm": station_total.values,
-        "valid_days": station_valid_days.values,
-        "rainy_days_ge_thr": station_rainy_days.values,
-        "heavy_days_ge_thr": station_heavy_days.values,
-        "max_mm": station_max.values,
-        "tgl_max": station_tgl_max.values,
-    }).sort_values(["total_mm", "station"], ascending=[False, True])
+    # SAFE idxmax (handles all-NaN columns)
+    station_tgl_max = num2.apply(
+        lambda col: col.idxmax() if col.notna().any() else pd.NA
+    ).astype("Int64")
 
+    station_dash = (
+        pd.DataFrame({
+            "station": num.columns,
+            "total_mm": station_total.values,
+            "valid_days": station_valid_days.values,
+            "rainy_days_ge_thr": station_rainy_days.values,
+            "heavy_days_ge_thr": station_heavy_days.values,
+            "max_mm": station_max.values,
+            "tgl_max": station_tgl_max.values,
+        })
+        .sort_values(["total_mm", "station"], ascending=[False, True])
+        .reset_index(drop=True)
+    )
+
+    # --- Day-level metrics ---
     day_total = num.sum(axis=1, skipna=True)
     day_mean = num.mean(axis=1, skipna=True)
     day_valid_stations = num.notna().sum(axis=1)
     day_rainy_stations = (num >= rainy_threshold).sum(axis=1, skipna=True)
     day_heavy_stations = (num >= heavy_threshold).sum(axis=1, skipna=True)
 
-    day_dash = pd.DataFrame({
-        "TGL": wide_num_out["TGL"].values,
-        "total_mm_all_stations": day_total.values,
-        "mean_mm_across_stations": day_mean.values,
-        "stations_valid": day_valid_stations.values,
-        "stations_rainy_ge_thr": day_rainy_stations.values,
-        "stations_heavy_ge_thr": day_heavy_stations.values,
-    }).sort_values("TGL")
+    day_dash = (
+        pd.DataFrame({
+            "TGL": wide_num_out["TGL"].values,
+            "total_mm_all_stations": day_total.values,
+            "mean_mm_across_stations": day_mean.values,
+            "stations_valid": day_valid_stations.values,
+            "stations_rainy_ge_thr": day_rainy_stations.values,
+            "stations_heavy_ge_thr": day_heavy_stations.values,
+        })
+        .sort_values("TGL")
+        .reset_index(drop=True)
+    )
 
-    total_mm_all_cells = float(np.nansum(num.to_numpy()))
-    total_valid_cells = int(np.isfinite(num.to_numpy()).sum())
-    total_cells = int(num.size)
-    coverage_pct_numeric = round(total_valid_cells / total_cells * 100, 2)
+    # --- Overall stats ---
+    arr = num.to_numpy()
+    total_mm_all_cells = float(np.nansum(arr))
+    total_valid_cells = int(np.isfinite(arr).sum())
+    total_cells = int(arr.size)
 
-    wettest_station = station_dash.iloc[0][["station", "total_mm"]].to_dict() if len(station_dash) else {}
-    wettest_day_idx = day_dash["total_mm_all_stations"].idxmax() if len(day_dash) else None
-    wettest_day = day_dash.loc[wettest_day_idx, ["TGL", "total_mm_all_stations"]].to_dict() if wettest_day_idx is not None else {}
+    coverage_pct_numeric = round(
+        (total_valid_cells / total_cells * 100) if total_cells > 0 else 0, 2
+    )
+
+    # --- Highlights ---
+    wettest_station = (
+        station_dash.iloc[0][["station", "total_mm"]].to_dict()
+        if not station_dash.empty else {}
+    )
+
+    wettest_day_idx = (
+        day_dash["total_mm_all_stations"].idxmax()
+        if not day_dash.empty and day_dash["total_mm_all_stations"].notna().any()
+        else None
+    )
+
+    wettest_day = (
+        day_dash.loc[wettest_day_idx, ["TGL", "total_mm_all_stations"]].to_dict()
+        if wettest_day_idx is not None else {}
+    )
 
     return station_dash, day_dash, {
         "total_mm_all_cells": total_mm_all_cells,
         "coverage_pct_numeric": coverage_pct_numeric,
         "wettest_station": wettest_station,
-        "wettest_day": wettest_day
+        "wettest_day": wettest_day,
     }
 
 def current_run_ending_at_last(series: pd.Series, condition_func, last_day: int):
