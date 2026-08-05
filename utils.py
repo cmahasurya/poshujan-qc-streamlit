@@ -5,6 +5,9 @@ import numpy as np
 import streamlit as st
 from sqlalchemy import create_engine, text
 from config import HORIZONTAL_COLS, NAME_MAP
+import streamlit as st
+from sqlalchemy import create_engine
+import urllib.parse
 
 # ============================================================
 # Database Utilities
@@ -12,16 +15,30 @@ from config import HORIZONTAL_COLS, NAME_MAP
 
 @st.cache_resource
 def get_db_engine():
-    """Fetches database URI from secrets.toml and creates a SQLAlchemy engine."""
-    db_url = (
-        st.secrets["connections"]["postgresql"]["dialect"] + "://" +
-        st.secrets["connections"]["postgresql"]["username"] + ":" +
-        st.secrets["connections"]["postgresql"]["password"] + "@" +
-        st.secrets["connections"]["postgresql"]["host"] + ":" +
-        str(st.secrets["connections"]["postgresql"]["port"]) + "/" +
-        st.secrets["connections"]["postgresql"]["database"]
+    if "connections" in st.secrets and "postgresql" in st.secrets["connections"]:
+        pg = st.secrets["connections"]["postgresql"]
+        
+        # Decode password jika tersimpan sebagai URL-encoded (%40 -> @)
+        raw_password = urllib.parse.unquote(pg["password"])
+        # Re-encode dengan aman untuk dimasukkan ke URI SQLAlchemy
+        clean_password = urllib.parse.quote_plus(raw_password)
+        
+        db_url = (
+            f"postgresql+psycopg2://{pg['username']}:{clean_password}"
+            f"@{pg['host']}:{pg['port']}/{pg['database']}?sslmode=require"
+        )
+    else:
+        from config import DB_URL
+        db_url = DB_URL
+
+    return create_engine(
+        db_url,
+        pool_pre_ping=True,
+        pool_recycle=300,
+        connect_args={"connect_timeout": 10}
     )
-    return create_engine(db_url)
+
+engine = get_db_engine()
 
 def get_latest_db_record_info(year: int, month: int):
     """Mengecek info tanggal dan total record terakhir di database untuk bulan terpilih."""
