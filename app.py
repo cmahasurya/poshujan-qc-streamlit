@@ -9,6 +9,7 @@ import pydeck as pdk
 from config import HORIZONTAL_COLS, NAME_MAP
 from utils import (
     insert_rainfall_data,
+    read_csv_robust,
     fetch_rainfall_data_from_db,
     fetch_rainfall_data_timeseries,
     compute_cdd_cwd_timeseries,

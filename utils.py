@@ -239,6 +239,35 @@ def fetch_rainfall_data_timeseries(year: int, month: int, lookback_days: int = 6
     
     return df.drop(columns=["RAW_TS"])
 
+import pandas as pd
+import io
+
+def read_csv_robust(uploaded_file):
+    """
+    Fungsi kustom untuk membaca file CSV dengan penanganan otomatis 
+    encoding (utf-8 / latin-1) dan auto-detect separator (, atau ;).
+    """
+    if uploaded_file is None:
+        return None
+
+    # Baca byte data dari Streamlit UploadedFile
+    bytes_data = uploaded_file.getvalue()
+
+    # Coba dekode encoding
+    try:
+        decoded_data = bytes_data.decode("utf-8")
+    except UnicodeDecodeError:
+        decoded_data = bytes_data.decode("latin-1")
+
+    # Gunakan python engine dengan sep=None untuk mendeteksi delimiter secara otomatis
+    df = pd.read_csv(
+        io.StringIO(decoded_data),
+        sep=None,
+        engine="python"
+    )
+    
+    return df
+
 # ============================================================
 # Helper Utilities
 # ============================================================
