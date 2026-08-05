@@ -35,9 +35,24 @@ st.set_page_config(
 
 st.title("SEGARA: Sistem Ekspor dan Generator Analisis Dasarian")
 st.caption(
-    "Platform operasional untuk pengolahan data pos hujan dasarian: standarisasi format BMKG, kontrol kualitas, "
-    "perhitungan ringkasan dan indeks basah-kering, serta visualisasi spasial."
+    "Platform kontrol kualitas dan pemrosesan data pos hujan dasarian BMKG Stasiun Klimatologi Nusa Tenggara Barat: "
+    "validasi otomatis, rekapitulasi, analisis indeks iklim, dan visualisasi spasial."
 )
+
+# Deskripsi Program & Pembuat
+with st.expander("ℹ️ Informasi Program & Pengembang", expanded=False):
+    st.markdown(
+        """
+        **Tentang SEGARA**  
+        SEGARA dirancang untuk mengotomatisasi rantai kerja pengawasan mutu (*quality control*), pemantauan kelengkapan data harian/dasarian, 
+        perhitungan indeks iklim, hingga pembuatan visualisasi spasial interaktif untuk jaringan pos hujan di Nusa Tenggara Barat.
+
+        **Pengembang**  
+        * **Developer:** Cakra Mahasurya Atmojo Pamungkas  
+        * **Instansi:** BMKG Stasiun Klimatologi Nusa Tenggara Barat  
+        * **Tim:** Tim Analisis
+        """
+    )
 
 # ============================================================
 # Navigation & Session state init
