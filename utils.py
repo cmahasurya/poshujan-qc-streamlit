@@ -11,6 +11,7 @@ import urllib.parse
 import io
 from sqlalchemy.dialects.postgresql import insert
 
+
 # ============================================================
 # Database Utilities
 # ============================================================
@@ -105,21 +106,21 @@ def fetch_rainfall_data_from_db(year: int, month: int) -> pd.DataFrame:
     
     return df.drop(columns=["RAW_TS"])
 
-def insert_rainfall_data(df: pd.DataFrame):
+def insert_rainfall_data(df: pd.DataFrame) -> int:
     """
-    Memasukkan DataFrame curah hujan (format vertikal/raw) ke tabel 'rainfall_data' di Supabase.
-    Mendukung Upsert / Handling duplikasi berdasarkan constraint skema database.
+    Memasukkan data ke Supabase tanpa tabel reflection.
+    Menggunakan ON CONFLICT DO NOTHING untuk mengabaikan duplikasi secara otomatis.
     """
     engine = get_db_engine()
     df_to_insert = df.copy()
 
-    # 1. Standarisasi Nama Kolom Wajib
+    # 1. Validasi kolom wajib
     required_cols = ["NAME", "DATA TIMESTAMP", "RAINFALL DAY MM"]
-    for col in required_cols:
-        if col not in df_to_insert.columns:
-            raise ValueError(f"Kolom wajib '{col}' tidak ditemukan dalam DataFrame yang akan di-insert.")
+    missing = [c for c in required_cols if c not in df_to_insert.columns]
+    if missing:
+        raise ValueError(f"Kolom wajib tidak ditemukan: {missing}")
 
-    # 2. Penanganan & Pembersihan Format Timestamp
+    # 2. Sanitasi Timestamp & Tipe Data
     ts_clean = (
         df_to_insert["DATA TIMESTAMP"]
         .astype(str)
@@ -127,28 +128,46 @@ def insert_rainfall_data(df: pd.DataFrame):
         .str.strip()
     )
     df_to_insert["DATA TIMESTAMP"] = pd.to_datetime(ts_clean, format="mixed", errors="coerce")
-    
-    # Hapus baris dengan timestamp invalid
     df_to_insert = df_to_insert[df_to_insert["DATA TIMESTAMP"].notna()].copy()
-
-    # 3. Filtering Kolom Sesuai Skema Tabel Supabase
-    cols_to_keep = [c for c in ["POS HUJAN ID", "NAME", "DATA TIMESTAMP", "RAINFALL DAY MM"] if c in df_to_insert.columns]
-    df_to_insert = df_to_insert[cols_to_keep]
-
-    # 4. Eksplisit Penanganan Tipe Data
+    
     df_to_insert["RAINFALL DAY MM"] = pd.to_numeric(df_to_insert["RAINFALL DAY MM"], errors="coerce")
+    df_to_insert["POS HUJAN ID"] = df_to_insert["POS HUJAN ID"] if "POS HUJAN ID" in df_to_insert.columns else None
 
-    # 5. Eksekusi Batch Ingestion ke Database
-    with engine.begin() as conn:
-        df_to_insert.to_sql(
-            "rainfall_data",
-            con=conn,
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=1000
+    if df_to_insert.empty:
+        return 0
+
+    # 3. Format payload tuple
+    records = [
+        (
+            row["POS HUJAN ID"] if pd.notna(row["POS HUJAN ID"]) else None,
+            row["NAME"],
+            row["DATA TIMESTAMP"].strftime("%Y-%m-%d %H:%M:%S"),
+            row["RAINFALL DAY MM"] if pd.notna(row["RAINFALL DAY MM"]) else None
         )
-    return len(df_to_insert)
+        for _, row in df_to_insert.iterrows()
+    ]
+
+    # 4. Direct Raw SQL Query dengan ON CONFLICT DO NOTHING
+    query = text("""
+        INSERT INTO rainfall_data ("POS HUJAN ID", "NAME", "DATA TIMESTAMP", "RAINFALL DAY MM")
+        VALUES (:pos_id, :name, :ts, :rain)
+        ON CONFLICT DO NOTHING;
+    """)
+
+    inserted_count = 0
+    chunk_size = 1000
+    
+    with engine.begin() as conn:
+        for i in range(0, len(records), chunk_size):
+            chunk = [
+                {"pos_id": r[0], "name": r[1], "ts": r[2], "rain": r[3]} 
+                for r in records[i:i + chunk_size]
+            ]
+            res = conn.execute(query, chunk)
+            if res.rowcount and res.rowcount > 0:
+                inserted_count += res.rowcount
+
+    return inserted_count if inserted_count > 0 else len(records)
 
 def insert_rainfall_data(df: pd.DataFrame) -> int:
     """
