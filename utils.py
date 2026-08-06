@@ -9,6 +9,7 @@ import streamlit as st
 from sqlalchemy import create_engine
 import urllib.parse
 import io
+from sqlalchemy.dialects.postgresql import insert
 
 # ============================================================
 # Database Utilities
@@ -151,8 +152,8 @@ def insert_rainfall_data(df: pd.DataFrame):
 
 def insert_rainfall_data(df: pd.DataFrame) -> int:
     """
-    Memasukkan DataFrame curah hujan (format vertikal/raw) ke tabel 'rainfall_data' di Supabase.
-    Membersihkan timestamp dan kolom agar sesuai dengan skema tabel.
+    Memasukkan DataFrame curah hujan ke tabel 'rainfall_data' di Supabase.
+    Menggunakan PostgreSQL ON CONFLICT DO NOTHING untuk mencegah error duplikasi data.
     """
     engine = get_db_engine()
     df_to_insert = df.copy()
@@ -177,23 +178,27 @@ def insert_rainfall_data(df: pd.DataFrame) -> int:
     cols_to_keep = [c for c in ["POS HUJAN ID", "NAME", "DATA TIMESTAMP", "RAINFALL DAY MM"] if c in df_to_insert.columns]
     df_to_insert = df_to_insert[cols_to_keep]
 
-    # 4. Pastikan Tipe Data Numerik
+    # 4. Pastikan Tipe Data Numerik & ganti NaN dengan None (NULL SQL)
     df_to_insert["RAINFALL DAY MM"] = pd.to_numeric(df_to_insert["RAINFALL DAY MM"], errors="coerce")
+    df_to_insert = df_to_insert.replace({np.nan: None})
 
     if df_to_insert.empty:
         return 0
 
-    # 5. Insert Batch ke Supabase
+    records = df_to_insert.to_dict(orient="records")
+
+    # 5. Insert Batch dengan Handling Conflict (Upsert / Do Nothing)
     with engine.begin() as conn:
-        df_to_insert.to_sql(
-            "rainfall_data",
-            con=conn,
-            if_exists="append",
-            index=False,
-            method="multi",
-            chunksize=1000
-        )
-    return len(df_to_insert)
+        from sqlalchemy import Table, MetaData
+        metadata = MetaData()
+        rainfall_table = Table("rainfall_data", metadata, autoload_with=conn)
+
+        stmt = insert(rainfall_table).values(records)
+        # Jika ada bentrok pada unique constraint (misal kombinasi NAME dan DATA TIMESTAMP)
+        stmt = stmt.on_conflict_do_nothing()
+
+        res = conn.execute(stmt)
+        return res.rowcount
 
 @st.cache_data(ttl=300)
 def fetch_rainfall_data_timeseries(year: int, month: int, lookback_days: int = 60) -> pd.DataFrame:
