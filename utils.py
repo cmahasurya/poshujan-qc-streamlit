@@ -8,6 +8,7 @@ from config import HORIZONTAL_COLS, NAME_MAP
 import streamlit as st
 from sqlalchemy import create_engine
 import urllib.parse
+import io
 
 # ============================================================
 # Database Utilities
@@ -238,9 +239,6 @@ def fetch_rainfall_data_timeseries(year: int, month: int, lookback_days: int = 6
     df["__source_file__"] = "Supabase DB"
     
     return df.drop(columns=["RAW_TS"])
-
-import pandas as pd
-import io
 
 def read_csv_robust(uploaded_file):
     """
@@ -912,3 +910,60 @@ def compute_data_completeness_summary(wide_num_win: pd.DataFrame) -> dict:
         "overall_completeness_pct": overall_pct,
         "station_breakdown": df_summary
     }
+
+def run_quality_control(df_month_win: pd.DataFrame, rainy_thr: float = 1.0, heavy_thr: float = 200.0) -> pd.DataFrame:
+    """
+    Memeriksa kontrol kualitas data curah hujan:
+    1. Data Kosong / Missing Data (NaN, None, 9999)
+    2. Nilai Ekstrim / Anomali (> heavy_thr / 200mm)
+    3. Nilai Negatif (< 0)
+    """
+    if df_month_win.empty:
+        return pd.DataFrame()
+
+    qc_records = []
+
+    for idx, row in df_month_win.iterrows():
+        tgl = row.get("TGL", np.nan)
+        for col in HORIZONTAL_COLS:
+            if col not in df_month_win.columns:
+                continue
+            
+            val = row[col]
+            if pd.isna(val) or val == 9999 or str(val).strip() == "":
+                qc_records.append({
+                    "TGL": tgl,
+                    "Station": col,
+                    "Nilai": "KOSONG / 9999",
+                    "FLAG": "MISSING_DATA",
+                    "Keterangan": "Data harian tidak terisi / hilang (Missing Value)"
+                })
+            else:
+                try:
+                    num_val = float(val)
+                    if num_val > heavy_thr:
+                        qc_records.append({
+                            "TGL": tgl,
+                            "Station": col,
+                            "Nilai": num_val,
+                            "FLAG": "EXTREME_VALUE",
+                            "Keterangan": f"Curah hujan sangat tinggi (> {heavy_thr} mm)"
+                        })
+                    elif num_val < 0:
+                        qc_records.append({
+                            "TGL": tgl,
+                            "Station": col,
+                            "Nilai": num_val,
+                            "FLAG": "INVALID_NEGATIVE",
+                            "Keterangan": "Nilai curah hujan negatif"
+                        })
+                except ValueError:
+                    qc_records.append({
+                        "TGL": tgl,
+                        "Station": col,
+                        "Nilai": str(val),
+                        "FLAG": "INVALID_FORMAT",
+                        "Keterangan": "Format karakter tidak valid"
+                    })
+
+    return pd.DataFrame(qc_records)
