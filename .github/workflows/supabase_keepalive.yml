@@ -10,22 +10,26 @@ jobs:
   supabase-ping:
     runs-on: ubuntu-latest
     steps:
-      - name: Ping Supabase Health Endpoint
+      - name: Ping Supabase REST Endpoint
         id: ping
         env:
           SUPABASE_ANON_KEY: ${{ secrets.SUPABASE_ANON_KEY }}
         run: |
-          # Ping the Supabase auth/health endpoint which wakes/keeps alive the instance
+          # Query the root PostgREST version/status with a strict 15-second timeout
           HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-            --retry 3 \
-            --retry-delay 5 \
-            -X GET "https://lltacxqcujbroorzcovd.supabase.co/auth/v1/health" \
-            -H "apikey: ${SUPABASE_ANON_KEY}")
+            --connect-timeout 10 \
+            --max-time 15 \
+            --retry 2 \
+            --retry-delay 3 \
+            -X GET "https://lltacxqcujbroorzcovd.supabase.co/rest/v1/" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" || echo "000")
 
-          echo "Supabase Auth/Health HTTP Status: ${HTTP_STATUS}"
+          echo "Supabase HTTP Status: ${HTTP_STATUS}"
 
-          # Accept standard success status codes
-          if [ "$HTTP_STATUS" -ne 200 ]; then
+          # Supabase REST returns 200 (if exposed) or 401/404 when active
+          # Any non-000 response means the server is reachable and active
+          if [ "$HTTP_STATUS" = "000" ] || [ "$HTTP_STATUS" -ge 500 ]; then
             echo "STATUS_CODE=${HTTP_STATUS}" >> $GITHUB_ENV
             exit 1
           fi
@@ -38,7 +42,7 @@ jobs:
           STATUS_CODE: ${{ env.STATUS_CODE }}
         run: |
           if [ -n "$TELEGRAM_BOT_TOKEN" ] && [ -n "$TELEGRAM_CHAT_ID" ]; then
-            MESSAGE="⚠️ *Supabase Keep-Alive Failed!*%0A%0A• *Repo:* ${{ github.repository }}%0A• *Status Code:* ${STATUS_CODE:-'Unreachable / Network Error'}%0A• *Time:* $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+            MESSAGE="⚠️ *Supabase Keep-Alive Failed!*%0A%0A• *Repo:* ${{ github.repository }}%0A• *Status:* ${STATUS_CODE:-'Unreachable / Network Timeout'}%0A• *Time:* $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
 
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
               -d "chat_id=${TELEGRAM_CHAT_ID}" \
